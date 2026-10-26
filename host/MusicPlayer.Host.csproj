@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>MusicPlayer.Host</AssemblyName>
+    <RootNamespace>MusicPlayer.Host</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>0.1.0</Version>
+    <Product>音乐播放器</Product>
+
+    <!-- CefSharp 必须指定具体平台，x64 与当前 CEF 二进制一致 -->
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CefSharp.WinForms.NETCore" Version="154.0.340" />
+  </ItemGroup>
+
+  <!-- 把 renderer/dist 一起拷到输出目录的 web/ 下，宿主优先加载它（单文件分发就够用） -->
+  <Target Name="CopyRendererDist" AfterTargets="Build" Condition="Exists('$(MSBuildProjectDirectory)\..\renderer\dist\index.html')">
+    <ItemGroup>
+      <RendererDistFiles Include="$(MSBuildProjectDirectory)\..\renderer\dist\**\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(RendererDistFiles)" DestinationFiles="@(RendererDistFiles->'$(OutDir)web\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Message Importance="high" Text="已复制前端产物到 $(OutDir)web" />
+  </Target>
+
+</Project>

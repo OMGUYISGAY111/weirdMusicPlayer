@@ -1,0 +1,23 @@
+{
+  "name": "music-player-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CEF (CefSharp) + TypeScript + Vue 3 desktop shell for the music player app",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev": "concurrently -k -n web,host -c cyan,magenta \"pnpm dev:web\" \"wait-on -t 60000 http-get://127.0.0.1:5173 && pnpm dev:host\"",
+    "dev:web": "pnpm --filter renderer dev",
+    "dev:host": "dotnet run --project host/MusicPlayer.Host.csproj -- --dev",
+    "build": "pnpm build:web && pnpm build:host",
+    "build:web": "pnpm --filter renderer build",
+    "build:host": "dotnet build host/MusicPlayer.Host.csproj -c Release",
+    "start": "dotnet run --project host/MusicPlayer.Host.csproj",
+    "package": "pnpm build:web && dotnet publish host/MusicPlayer.Host.csproj -c Release -o dist",
+    "typecheck": "pnpm --filter renderer typecheck",
+    "clean": "node -e \"const fs=require('fs');for(const p of ['renderer/dist','host/bin','host/obj','dist'])fs.rmSync(p,{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.6",
+    "wait-on": "^9.5.1"
+  }
+}

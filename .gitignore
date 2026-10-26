@@ -1,0 +1,16 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# renderer build output
+renderer/dist/
+
+# .NET host build output
+host/bin/
+host/obj/
+dist/
+
+# logs & local cache
+*.log
+.vite/
+cef-cache/

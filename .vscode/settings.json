@@ -1,0 +1,5 @@
+{
+  "// 说明": "让编辑器使用项目锁定的 TypeScript（renderer 里那份），避免内置 TS 6/7 与构建版本不一致导致编辑器报错、构建却通过。",
+  "typescript.tsdk": "renderer/node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true
+}
