@@ -118,8 +118,21 @@ const tickDetach = computed(() => {
   return Math.min(1, Math.abs(desired - actual) / half)
 })
 
-const tickStyle = computed(() => {
-  const detach = tickDetach.value
+/**
+ * 右侧「总时长」的颜色：随整首歌的播放进度从灰渐变到红。
+ * 0% 时是灰（--mp-dim），100% 时是主题红（--mp-accent）。
+ */
+const totalLabelStyle = computed(() => {
+  const percent = Math.round(playedRatio.value * 100)
+  return {
+    color:
+      percent >= 100
+        ? 'var(--mp-accent)'
+        : `color-mix(in srgb, var(--mp-accent) ${percent}%, var(--mp-dim))`,
+  }
+})
+
+const tickStyle = computed(() => {  const detach = tickDetach.value
   const width = progressWidth.value
   const half = timeGroupHalf.value
   const desired = playedRatio.value * width
@@ -429,7 +442,7 @@ defineExpose({ play, pause, toggle, seekTo, setVolume, toggleMute, audioEl, play
       <span ref="timeGroupEl" class="mp-time-group" :style="timeGroupStyle" aria-hidden="true">
         <span class="mp-time mp-time-played">{{ formatTime(currentTime) }}</span>
         <span class="mp-time-gap" :style="tickStyle" />
-        <span class="mp-time mp-time-total">{{ formatTime(duration) }}</span>
+        <span class="mp-time mp-time-total" :style="totalLabelStyle">{{ formatTime(duration) }}</span>
       </span>
 
       <div class="mp-progress-track">
@@ -627,8 +640,10 @@ defineExpose({ play, pause, toggle, seekTo, setVolume, toggleMute, audioEl, play
 }
 
 .mp-time-total {
+  /* 颜色由播放进度决定（totalLabelStyle），这里只给兜底色和顺滑过渡 */
   color: var(--mp-dim);
   font-weight: 700;
+  transition: color 0.25s linear;
 }
 
 .mp-progress:hover .mp-time-group,
