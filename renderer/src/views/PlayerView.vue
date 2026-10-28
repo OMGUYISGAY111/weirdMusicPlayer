@@ -14,7 +14,7 @@ const status = ref('')
 const title = ref('')
 /** 歌手/作者（B站 解析结果里带） */
 const artist = ref('')
-/** B站 解析中（下载 + 转码） */
+/** 远端音轨解析中 */
 const biliBusy = ref(false)
 const currentTime = ref(0)
 const duration = ref(0)
@@ -66,12 +66,12 @@ async function playViaProxy(): Promise<void> {
   status.value = `代理播放：${proxied} ← ${url}`
 }
 
-/** B站 地址：宿主解析 + 转码成 mp3（几分钟的视频通常 5~20 秒） */
+/** B站 地址：直接流播放，不兼容时按需实时转码 */
 async function playBilibili(): Promise<void> {
   await playRemote('resolveBilibili', 'B站')
 }
 
-/** YouTube 地址：宿主用 yt-dlp 取流 + ffmpeg 转 mp3（首次通常 10~40 秒） */
+/** YouTube 地址：yt-dlp 仅解析地址，不下载音频文件 */
 async function playYouTube(): Promise<void> {
   await playRemote('resolveYouTube', 'YouTube')
 }
@@ -81,7 +81,7 @@ async function playRemote(kind: 'resolveBilibili' | 'resolveYouTube', label: str
   const input = urlInput.value.trim()
   if (!input) return
   biliBusy.value = true
-  status.value = `正在解析 ${label} 音频（下载 + 转码 mp3）…`
+  status.value = `正在获取 ${label} 音频流…`
   try {
     const result =
       kind === 'resolveBilibili' ? await host.resolveBilibili(input) : await host.resolveYouTube(input)
@@ -94,7 +94,7 @@ async function playRemote(kind: 'resolveBilibili' | 'resolveYouTube', label: str
     src.value = result.streamUrl
     title.value = result.title ?? result.bvid ?? `${label} 音频`
     artist.value = result.artist ?? ''
-    status.value = `${label} 播放：${result.title}${result.cached ? '（命中缓存）' : '（已转码）'}`
+    status.value = `${label} 播放：${result.title}（${result.playbackMode === 'direct' ? '直接流播放' : '实时转码'}）`
   } finally {
     biliBusy.value = false
   }

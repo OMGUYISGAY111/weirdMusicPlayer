@@ -14,24 +14,6 @@ using System.Threading.Tasks;
 
 namespace MusicPlayer.Host;
 
-/// <summary>
-/// B站音频解析：视频页地址 -> 音频流 -> 转成 mp3 落地缓存。
-///
-/// 为什么必须转码：B站 DASH 音频是 AAC（m4s / audio/mp4，codec mp4a.40.2），
-/// 当前 CEF 官方构建不含 AAC 解码器，直接喂给 &lt;audio&gt; 会 "no supported sources"。
-/// 流程：wbi 签名调 playurl 拿 30280（192K AAC）-> 下载 m4s -> ffmpeg 转 mp3 -> 缓存复用。
-///
-/// 也不需要登录：nav 接口在未登录时同样返回 wbi_img（用于签名），
-/// playurl 未登录也能拿到 192K 音频；要更高码率（Hi-Res / 杜比）才需要 SESSDATA。
-/// </summary>
-internal sealed record BilibiliTrack(
-    string Bvid,
-    string Title,
-    string Artist,
-    double Duration,
-    string Mp3Path,
-    bool FromCache);
-
 /// <summary>B站 API 与音频 CDN 使用国内直连，不继承供 YouTube 使用的系统代理。</summary>
 internal static class BilibiliHttp
 {
@@ -86,31 +68,10 @@ internal static class BilibiliResolver
         return match.Success ? match.Value : null;
     }
 
-    /// <summary>解析 + 转码，返回本地 mp3 路径（同一 BV 命中缓存直接复用）</summary>
-    public static async Task<BilibiliTrack> ResolveAsync(string input, string cacheRoot, CancellationToken cancellationToken = default)
+    /// <summary>只解析视频信息和音轨，不下载或缓存音频</summary>
+    public static async Task<RemoteAudioTrack> ResolveAsync(string input, CancellationToken cancellationToken = default)
     {
         var bvid = ExtractBvid(input) ?? throw new InvalidOperationException("没找到 BV 号，请粘贴视频地址或 BV 号。");
-
-        var cacheDir = Path.Combine(cacheRoot, "bili");
-        Directory.CreateDirectory(cacheDir);
-        var mp3Path = Path.Combine(cacheDir, $"{bvid}.mp3");
-        var metaPath = Path.Combine(cacheDir, $"{bvid}.json");
-
-        if (File.Exists(mp3Path) && new FileInfo(mp3Path).Length > 1024 && File.Exists(metaPath))
-        {
-            try
-            {
-                var cached = JsonSerializer.Deserialize<CachedMeta>(await File.ReadAllTextAsync(metaPath, cancellationToken));
-                if (cached != null)
-                {
-                    return new BilibiliTrack(bvid, cached.Title, cached.Artist, cached.Duration, mp3Path, true);
-                }
-            }
-            catch
-            {
-                // 缓存元数据坏了就重新解析
-            }
-        }
 
         // 1. 视频信息
         var viewJson = await GetJsonAsync($"https://api.bilibili.com/x/web-interface/view?bvid={bvid}", cancellationToken);
@@ -164,26 +125,16 @@ internal static class BilibiliResolver
         var audioUrl = picked.GetProperty("baseUrl").GetString()
             ?? throw new InvalidOperationException("播放地址为空。");
 
-        // 3. 下载 m4s（带 Referer/UA，B站 CDN 有防盗链）
-        var m4sPath = Path.Combine(cacheDir, $"{bvid}.m4s");
-        await DownloadAsync(audioUrl, m4sPath, cancellationToken);
+        if (playJson.GetProperty("data").TryGetProperty("timelength", out var timeLength) && timeLength.TryGetDouble(out var milliseconds))
+            duration = milliseconds / 1000;
 
-        // 4. ffmpeg 转 mp3
-        try
-        {
-            await TranscodeAsync(m4sPath, mp3Path, cancellationToken);
-        }
-        finally
-        {
-            TryDelete(m4sPath);
-        }
-
-        await File.WriteAllTextAsync(
-            metaPath,
-            JsonSerializer.Serialize(new CachedMeta(title, artist, duration)),
-            cancellationToken);
-
-        return new BilibiliTrack(bvid, title, artist, duration, mp3Path, false);
+        var codec = picked.TryGetProperty("codecs", out var codecValue) ? codecValue.GetString() : "";
+        return new RemoteAudioTrack(bvid, title, artist, duration, audioUrl,
+            codec == "mp4a.40.2" ? "audio/mp4; codecs=\"mp4a.40.2\"" : "", new Dictionary<string, string>
+            {
+                ["User-Agent"] = UserAgent,
+                ["Referer"] = "https://www.bilibili.com/",
+            }, null) { SourceKind = "bilibili", OriginalUrl = input };
     }
 
     private sealed record CachedMeta(string Title, string Artist, double Duration);
@@ -236,82 +187,6 @@ internal static class BilibiliResolver
         return $"{query}&w_rid={wbiSignature}";
     }
 
-    private static async Task DownloadAsync(string url, string targetPath, CancellationToken cancellationToken)
-    {
-        using var response = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        if (!response.IsSuccessStatusCode)
-        {
-            if ((int)response.StatusCode == 412) throw BilibiliHttp.Blocked("下载音频失败");
-            throw new InvalidOperationException($"下载音频失败：HTTP {(int)response.StatusCode}");
-        }
-
-        await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
-        await using var target = File.Create(targetPath);
-        await source.CopyToAsync(target, cancellationToken);
-    }
-
-    private static async Task TranscodeAsync(string inputPath, string outputPath, CancellationToken cancellationToken)
-    {
-        var ffmpeg = FfmpegLocator.Find()
-            ?? throw new InvalidOperationException(
-                "找不到 ffmpeg：B站 音频是 AAC，需要 ffmpeg 转成 mp3。\n" +
-                "可以安装 ffmpeg（winget install Gyan.FFmpeg）或用环境变量 MUSICPLAYER_FFMPEG 指定路径。");
-
-        var tempOutput = outputPath + ".tmp.mp3";
-        TryDelete(tempOutput);
-
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = ffmpeg,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-
-        startInfo.ArgumentList.Add("-hide_banner");
-        startInfo.ArgumentList.Add("-loglevel");
-        startInfo.ArgumentList.Add("error");
-        startInfo.ArgumentList.Add("-y");
-        startInfo.ArgumentList.Add("-i");
-        startInfo.ArgumentList.Add(inputPath);
-        startInfo.ArgumentList.Add("-vn");
-        startInfo.ArgumentList.Add("-acodec");
-        startInfo.ArgumentList.Add("libmp3lame");
-        startInfo.ArgumentList.Add("-b:a");
-        startInfo.ArgumentList.Add("192k");
-        startInfo.ArgumentList.Add(tempOutput);
-
-        using var process = Process.Start(startInfo)
-            ?? throw new InvalidOperationException("ffmpeg 启动失败。");
-
-        var stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-        var stderr = await stderrTask;
-
-        if (process.ExitCode != 0 || !File.Exists(tempOutput))
-        {
-            throw new InvalidOperationException($"ffmpeg 转码失败（exit {process.ExitCode}）：{stderr.Trim()}");
-        }
-
-        TryDelete(outputPath);
-        File.Move(tempOutput, outputPath);
-    }
-
-    private static void TryDelete(string path)
-    {
-        try
-        {
-            if (File.Exists(path))
-            {
-                File.Delete(path);
-            }
-        }
-        catch
-        {
-            // 忽略
-        }
-    }
 }
 
 internal static class FfmpegLocator

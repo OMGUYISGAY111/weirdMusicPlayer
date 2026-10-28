@@ -140,6 +140,7 @@ onMounted(refresh)
         <div class="row wrap">
           <button @click="host.openDevTools()">开发者工具</button>
           <button @click="host.openUserDataFolder()">打开数据目录</button>
+          <button :disabled="!inCef" @click="host.openLogFolder()">打开诊断日志</button>
           <button @click="zoomOut">缩小</button>
           <button @click="zoomReset">100%</button>
           <button @click="zoomIn">放大</button>

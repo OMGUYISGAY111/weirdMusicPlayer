@@ -13,6 +13,10 @@ export function connectPlaylistPlayback(queue: ReturnType<typeof createPlaylist>
     },
   })
   const off = [
+    controller.on('statechange', () => {
+      const state = controller.snapshot()
+      queue.syncBuffering(state.loading, state.playing)
+    }),
     controller.on('ended', () => { void queue.ended() }),
     controller.on('play', () => queue.syncPlaying(true)),
     controller.on('pause', () => {

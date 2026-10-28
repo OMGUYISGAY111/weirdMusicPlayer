@@ -15,6 +15,7 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     // 不用 baseUrl：TS 7 会移除它。paths 从 TS 4.1 起默认相对本文件解析。
     "paths": {
       "@/*": ["./src/*"]

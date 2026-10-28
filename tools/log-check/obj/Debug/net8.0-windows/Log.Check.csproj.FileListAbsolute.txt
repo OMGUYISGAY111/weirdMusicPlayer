@@ -1,0 +1,14 @@
+D:\code\项目\音乐播放器\ver2\app端\tools\log-check\bin\Debug\net8.0-windows\Log.Check.exe
+D:\code\项目\音乐播放器\ver2\app端\tools\log-check\bin\Debug\net8.0-windows\Log.Check.deps.json
+D:\code\项目\音乐播放器\ver2\app端\tools\log-check\bin\Debug\net8.0-windows\Log.Check.runtimeconfig.json
+D:\code\项目\音乐播放器\ver2\app端\tools\log-check\bin\Debug\net8.0-windows\Log.Check.dll
+D:\code\项目\音乐播放器\ver2\app端\tools\log-check\bin\Debug\net8.0-windows\Log.Check.pdb
+D:\code\项目\音乐播放器\ver2\app端\tools\log-check\obj\Debug\net8.0-windows\Log.Check.GeneratedMSBuildEditorConfig.editorconfig
+D:\code\项目\音乐播放器\ver2\app端\tools\log-check\obj\Debug\net8.0-windows\Log.Check.AssemblyInfoInputs.cache
+D:\code\项目\音乐播放器\ver2\app端\tools\log-check\obj\Debug\net8.0-windows\Log.Check.AssemblyInfo.cs
+D:\code\项目\音乐播放器\ver2\app端\tools\log-check\obj\Debug\net8.0-windows\Log.Check.csproj.CoreCompileInputs.cache
+D:\code\项目\音乐播放器\ver2\app端\tools\log-check\obj\Debug\net8.0-windows\Log.Check.dll
+D:\code\项目\音乐播放器\ver2\app端\tools\log-check\obj\Debug\net8.0-windows\refint\Log.Check.dll
+D:\code\项目\音乐播放器\ver2\app端\tools\log-check\obj\Debug\net8.0-windows\Log.Check.pdb
+D:\code\项目\音乐播放器\ver2\app端\tools\log-check\obj\Debug\net8.0-windows\Log.Check.genruntimeconfig.cache
+D:\code\项目\音乐播放器\ver2\app端\tools\log-check\obj\Debug\net8.0-windows\ref\Log.Check.dll

@@ -64,16 +64,45 @@ Check(YtDlpAuthentication.DescribeFailure("ERROR: Requested format is not availa
     .Contains("未返回可用音频"), "格式缺失应给出明确解释");
 Console.WriteLine("PASS: JavaScript 运行时配置及格式失败诊断");
 
+using (var streamJson = JsonDocument.Parse("""
+{"id":"track","title":"音频","uploader":"作者","duration":12.5,
+ "url":"https://cdn.example/audio?expire=123","ext":"webm","acodec":"opus","vcodec":"none","protocol":"https",
+ "http_headers":{"User-Agent":"test-agent","Referer":"https://www.youtube.com/"}}
+"""))
+{
+    var track = YoutubeResolver.Parse(streamJson.RootElement, "http://127.0.0.1:7897");
+    Check(track.MimeType == "audio/webm; codecs=\"opus\"", "Opus 容器和编码识别错误");
+    Check(track.Headers["Referer"] == "https://www.youtube.com/" && track.Proxy == "http://127.0.0.1:7897", "播放时应保留解析的请求头及代理出口");
+    Check(track.Duration == 12.5 && track.Id == "track", "流元数据错误");
+}
+using (var manifest = JsonDocument.Parse("""
+{"id":"track","duration":20,"url":"https://cdn.example/audio.m3u8","ext":"m4a","acodec":"mp4a.40.2","protocol":"m3u8_native"}
+"""))
+    Check(YoutubeResolver.Parse(manifest.RootElement, null).MimeType == "", "分片清单不应作为普通音频直链播放");
+using (var missing = JsonDocument.Parse("""{"duration":null}"""))
+{
+    var rejected = false;
+    try { YoutubeResolver.Parse(missing.RootElement, null); } catch (InvalidOperationException) { rejected = true; }
+    Check(rejected, "没有音轨 URL 应返回明确错误");
+}
+Console.WriteLine("PASS: 远端音轨元数据、编码、清单和请求头解析");
+
+var cookieScope = YoutubeResolver.ParseCookies("session=fixture; Domain=.example.com; Path=/audio; Secure; Expires=4102444800; other=ignored; Domain=.other.test; Path=/; unscoped=ignored",
+    new Uri("https://cdn.example.com/audio/track"));
+Check(cookieScope.GetCookieHeader(new Uri("https://cdn.example.com/audio/track")) == "session=fixture", "只应使用匹配域名、路径和协议的 Cookie");
+Check(cookieScope.GetCookieHeader(new Uri("https://unrelated.test/audio/track")) == "", "Cookie 不应泄漏到重定向的其他域名");
+Check(cookieScope.GetCookieHeader(new Uri("http://cdn.example.com/audio/track")) == "", "Secure Cookie 不应发给 HTTP");
+Console.WriteLine("PASS: yt-dlp Cookie 作用域保留（仅合成夹具，无真实账号）");
+
 if (args.Length > 1 && args[0] == "--resolve-youtube")
 {
     using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
     try
     {
         var track = await YoutubeResolver.ResolveAsync(args[1],
-            Path.Combine(Path.GetTempPath(), "MusicPlayerYoutubeProbe"),
             Environment.GetEnvironmentVariable("MUSICPLAYER_PROXY") ?? SystemProxy.Detect(), timeout.Token);
-        Console.WriteLine(JsonSerializer.Serialize(track));
-        Check(File.Exists(track.Mp3Path) && new FileInfo(track.Mp3Path).Length > 1024, "YouTube 音频缓存缺失");
+        Console.WriteLine(JsonSerializer.Serialize(new { track.Id, track.Title, track.Duration, track.MimeType }));
+        Check(Uri.TryCreate(track.Url, UriKind.Absolute, out _), "YouTube 音频地址缺失");
     }
     catch (Exception ex) { Console.WriteLine(ex.Message); Environment.ExitCode = 1; }
 }
@@ -81,12 +110,11 @@ if (args.Length > 1 && args[0] == "--resolve-youtube")
 if (args.Length > 1 && args[0] == "--resolve-bili")
 {
     using var timeout = new CancellationTokenSource(TimeSpan.FromMinutes(3));
-    var cache = Path.Combine(Path.GetTempPath(), "MusicPlayerBiliProbe");
     try
     {
-        var track = await BilibiliResolver.ResolveAsync(args[1], cache, timeout.Token);
-        Console.WriteLine(JsonSerializer.Serialize(track));
-        Check(File.Exists(track.Mp3Path) && new FileInfo(track.Mp3Path).Length > 1024, "音频缓存缺失");
+        var track = await BilibiliResolver.ResolveAsync(args[1], timeout.Token);
+        Console.WriteLine(JsonSerializer.Serialize(new { track.Id, track.Title, track.Duration, track.MimeType }));
+        Check(Uri.TryCreate(track.Url, UriKind.Absolute, out _), "音频地址缺失");
     }
     catch (Exception ex)
     {

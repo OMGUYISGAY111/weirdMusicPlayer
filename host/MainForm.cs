@@ -39,7 +39,12 @@ internal sealed class MainForm : Form
 
         // 把页面 console 输出转到调试输出，dev 下排错用
         _browser.ConsoleMessage += (_, e) =>
+        {
             Debug.WriteLine($"[js:{e.Level}] {e.Message} ({e.Source}:{e.Line})");
+            if (e.Level is LogSeverity.Error or LogSeverity.Warning)
+                PlaybackLog.Write("renderer.console", "message", new { message = e.Message, source = e.Source, line = e.Line },
+                    e.Level == LogSeverity.Error ? "error" : "warn");
+        };
 
         Controls.Add(_browser);
     }

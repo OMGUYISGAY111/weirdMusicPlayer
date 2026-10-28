@@ -2,13 +2,14 @@
 import { computed, onBeforeUnmount } from 'vue'
 import AudioPlayer from './AudioPlayer.vue'
 import { usePlaylistStore } from '@/stores/playlist'
-import { createMediaElementController } from '@/playback/mediaElementController'
+import { createHostMediaController } from '@/playback/hostMediaController'
 import { connectPlaylistPlayback } from '@/playlist/playbackAdapter'
 import type { PlaybackMode } from '@/playlist/playlist'
+import { host, hostBridge } from '@/bridge/host'
 
 // 应用级播放端：路由页面卸载时仍保持同一个控制器。
 const playlist = usePlaylistStore()
-const controller = createMediaElementController()
+const controller = createHostMediaController()
 const disconnect = connectPlaylistPlayback(playlist, controller)
 const mode = computed({ get: () => playlist.state.mode, set: (value: PlaybackMode) => playlist.setMode(value) })
 // 先读取共享快照以跟踪队列、模式和历史变化，再向核心查询可用操作。
@@ -18,7 +19,7 @@ const statusText = computed(() => {
   const status = playlist.state.status
   if (status === 'error') return playlist.state.error
   if (status === 'paused' && !playlist.state.source) return '已恢复列表，点击播放'
-  return { idle: '选择歌曲开始播放', resolving: '正在解析音频…', loading: '正在加载音频…', playing: '正在播放', paused: '已暂停', ended: '列表播放完毕' }[status]
+  return { idle: '选择歌曲开始播放', resolving: '正在解析音频…', loading: '正在加载音频…', buffering: '缓冲中，网络恢复后继续播放…', playing: '正在播放', paused: '已暂停', ended: '列表播放完毕' }[status]
 })
 onBeforeUnmount(() => { disconnect(); controller.dispose() })
 </script>
@@ -27,6 +28,7 @@ onBeforeUnmount(() => { disconnect(); controller.dispose() })
   <div v-show="playlist.state.items.length" class="queue-dock">
     <div class="queue-controls">
       <RouterLink to="/search">播放列表（{{ playlist.state.items.length }}）</RouterLink>
+      <button type="button" :disabled="!hostBridge.ready" @click="host.openLogFolder()">打开日志</button>
       <label>播放模式
         <select v-model="mode" aria-label="播放模式">
           <option value="sequential">顺序播放</option>

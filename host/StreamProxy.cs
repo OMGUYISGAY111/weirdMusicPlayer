@@ -25,11 +25,13 @@ namespace MusicPlayer.Host;
 ///   1. 页面调用 hostApi.registerStream(url, headersJson) -> 返回 "stream://media/{id}"
 ///   2. 把返回的地址当普通 src 用（支持 Range、seek、buffered）
 /// </summary>
-internal sealed record StreamDescriptor(string Url, Dictionary<string, string> Headers, string? LocalPath);
+internal sealed record StreamDescriptor(string Url, Dictionary<string, string> Headers, string? LocalPath,
+    RemoteAudioTrack? Track = null, bool Transcode = false);
 
 internal static class StreamRegistry
 {
     private static readonly ConcurrentDictionary<string, StreamDescriptor> Items = new();
+    private static readonly ConcurrentDictionary<string, bool> Failed = new();
     private static int _sequence;
 
     /// <summary>注册一个上游地址，返回页面可用的 stream:// 地址</summary>
@@ -39,17 +41,31 @@ internal static class StreamRegistry
         return Add(new StreamDescriptor(url, headers, null));
     }
 
-    /// <summary>注册一个本地文件（例如 B站 转码后的 mp3），支持 Range/seek</summary>
+    /// <summary>注册用户本地文件，支持 Range/seek；在线音轨不使用此路径。</summary>
     public static string RegisterLocalFile(string path)
     {
         var full = Path.GetFullPath(path);
         return Add(new StreamDescriptor(string.Empty, new Dictionary<string, string>(), full));
     }
 
+    public static string RegisterRemote(RemoteAudioTrack track) => Add(new StreamDescriptor(track.Url, track.Headers, null, track));
+    public static string RegisterTranscoded(RemoteAudioTrack track) => Add(new StreamDescriptor(track.Url, track.Headers, null, track, true));
+
     private static string Add(StreamDescriptor descriptor)
     {
+        // 注册项只持有元数据；限制长期使用时失效 URL 的内存占用。
+        if (Items.Count >= 256)
+            foreach (var key in Items.Keys.OrderBy(key => Convert.ToInt32(key, 16)).Take(64))
+            {
+                Items.TryRemove(key, out _);
+                Failed.TryRemove(key, out _);
+            }
         var id = Interlocked.Increment(ref _sequence).ToString("x");
         Items[id] = descriptor;
+        PlaybackLog.Write("stream", "registered", new { source = $"stream://media/{id}",
+            mode = descriptor.Transcode ? "transcode" : descriptor.LocalPath != null ? "local" : "direct",
+            platform = descriptor.Track?.SourceKind, trackId = descriptor.Track?.Id,
+            duration = descriptor.Track?.Duration, mime = descriptor.Track?.MimeType });
         return $"stream://media/{id}";
     }
 
@@ -64,6 +80,28 @@ internal static class StreamRegistry
         descriptor = new StreamDescriptor(string.Empty, new Dictionary<string, string>(), null);
         return false;
     }
+
+    public static void MarkFailed(string id, bool recoverable = true)
+    {
+        if (Failed.TryAdd(id, recoverable)) PlaybackLog.Write("stream", "failed", new { source = $"stream://media/{id}", recoverable }, "error");
+    }
+    public static bool HasFailed(string id) => Failed.ContainsKey(id);
+    public static string GetError(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != "stream" || uri.Host != "media") return "";
+        return HasFailed(uri.AbsolutePath.Trim('/')) ? "音频流加载或解码失败，请点击重试重新获取音轨。" : "";
+    }
+
+    public static bool IsRecoverable(string url) => Uri.TryCreate(url, UriKind.Absolute, out var uri)
+        && Failed.TryGetValue(uri.AbsolutePath.Trim('/'), out var recoverable) && recoverable;
+
+    public static bool CanRecover(Exception error) => error switch
+    {
+        AudioStreamException audio => audio.Recoverable,
+        TimeoutException or HttpRequestException or OperationCanceledException => true,
+        FileNotFoundException or InvalidOperationException => false,
+        _ => error is IOException,
+    };
 
     private static Dictionary<string, string> ParseHeaders(string? raw)
     {
@@ -132,6 +170,8 @@ internal sealed class StreamProxyHandler : IResourceHandler
     private readonly string _id;
 
     private HttpResponseMessage? _response;
+    private HttpClient? _client;
+    private readonly CancellationTokenSource _cancel = new();
     private Stream? _body;
     private int _status = 200;
     private long _length = -1;
@@ -151,6 +191,7 @@ internal sealed class StreamProxyHandler : IResourceHandler
         try
         {
             Trace.WriteLine($"stream:// {message}");
+            PlaybackLog.Write("stream", "request_error", new { message }, "error");
         }
         catch
         {
@@ -180,13 +221,33 @@ internal sealed class StreamProxyHandler : IResourceHandler
                 return false;
             }
 
+            // CEF 会自动续传断开的媒体请求。已确认失败的流必须返回失败状态，
+            // 否则浏览器可能无限重试、始终不触发媒体 error，界面还停在播放状态。
+            if (StreamRegistry.HasFailed(_id))
+            {
+                _status = 502;
+                _length = _remaining = 0;
+                // CEF 在读取响应头前可能先确认 Range 偏移，确认后才会看到 502。
+                var failedRange = Regex.Match(request.Headers?["Range"] ?? "", "^bytes=(\\d+)-");
+                if (failedRange.Success && long.TryParse(failedRange.Groups[1].Value, out var failedStart))
+                    _preSkippedBytes = failedStart;
+                return true;
+            }
+
             _headOnly = string.Equals(request.Method, "HEAD", StringComparison.OrdinalIgnoreCase);
             var range = request.Headers?["Range"];
             Trace.WriteLine($"stream:// {_id} open {request.Method} range={range ?? "none"}");
+            PlaybackLog.Write("stream", "request_open", new { source = $"stream://media/{_id}", method = request.Method, range });
 
             if (!string.IsNullOrEmpty(descriptor.LocalPath))
             {
                 return OpenLocalFile(descriptor.LocalPath!, range);
+            }
+
+            if (descriptor.Transcode && descriptor.Track != null)
+            {
+                var ffmpeg = FfmpegLocator.Find() ?? throw new InvalidOperationException("找不到 ffmpeg。");
+                return OpenSeekable(new VirtualWaveStream(descriptor.Track, ffmpeg), "audio/wav", range);
             }
 
             var method = request.Method ?? "GET";
@@ -201,18 +262,27 @@ internal sealed class StreamProxyHandler : IResourceHandler
                 message.Headers.TryAddWithoutValidation("Range", range);
             }
 
-            var response = ProxyHttp.Client
-                .SendAsync(message, HttpCompletionOption.ResponseHeadersRead)
+            var client = ProxyHttp.Client;
+            if (descriptor.Track != null)
+            {
+                var handler = new HttpClientHandler { UseProxy = !string.IsNullOrWhiteSpace(descriptor.Track.Proxy),
+                    Proxy = string.IsNullOrWhiteSpace(descriptor.Track.Proxy) ? null : new System.Net.WebProxy(descriptor.Track.Proxy),
+                    UseCookies = true, CookieContainer = descriptor.Track.Cookies, AutomaticDecompression = System.Net.DecompressionMethods.None };
+                client = _client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
+            }
+            var response = client
+                .SendAsync(message, HttpCompletionOption.ResponseHeadersRead, _cancel.Token)
                 .GetAwaiter()
                 .GetResult();
 
             _response = response;
             _status = (int)response.StatusCode;
+            if (_status >= 400) StreamRegistry.MarkFailed(_id, _status is 401 or 403 or 408 or 429 || _status >= 500);
             _length = response.Content.Headers.ContentLength ?? -1;
             _remaining = _length;
             _contentRange = response.Content.Headers.ContentRange?.ToString();
             _preSkippedBytes = response.Content.Headers.ContentRange?.From ?? 0;
-            _mimeType = response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
+            _mimeType = descriptor.Track?.MimeType.Split(';')[0] ?? response.Content.Headers.ContentType?.MediaType ?? "application/octet-stream";
 
             if (!_headOnly)
             {
@@ -223,7 +293,9 @@ internal sealed class StreamProxyHandler : IResourceHandler
         }
         catch (Exception ex)
         {
-            Log($"上游失败 {_id}: {ex.GetType().Name} {ex.Message}");
+            Log($"上游失败 {_id}: {ex.GetType().Name}");
+            if (!_cancel.IsCancellationRequested) StreamRegistry.MarkFailed(_id, StreamRegistry.CanRecover(ex));
+            Dispose();
             return false;
         }
     }
@@ -237,24 +309,36 @@ internal sealed class StreamProxyHandler : IResourceHandler
             return false;
         }
 
-        var info = new FileInfo(path);
-        var total = info.Length;
+        return OpenSeekable(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read),
+            path.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase) ? "audio/mpeg" : "application/octet-stream", range);
+    }
+
+    private bool OpenSeekable(Stream stream, string mimeType, string? range)
+    {
+        _body = stream;
+        var total = stream.Length;
         var start = 0L;
         var end = total - 1;
 
         if (!string.IsNullOrEmpty(range))
         {
-            var match = Regex.Match(range, "bytes=(\\d*)-(\\d*)");
-            if (match.Success)
+            var match = Regex.Match(range, "^bytes=(\\d*)-(\\d*)$");
+            if (!match.Success || (!match.Groups[1].Success && !match.Groups[2].Success)
+                || (match.Groups[1].Value.Length == 0 && match.Groups[2].Value.Length == 0))
+            {
+                start = total;
+            }
+            else
             {
                 if (match.Groups[1].Value.Length > 0)
                 {
-                    start = long.Parse(match.Groups[1].Value);
+                    if (!long.TryParse(match.Groups[1].Value, out start)) start = total;
                 }
-
                 if (match.Groups[2].Value.Length > 0)
                 {
-                    end = Math.Min(long.Parse(match.Groups[2].Value), total - 1);
+                    if (!long.TryParse(match.Groups[2].Value, out var requested)) start = total;
+                    else if (match.Groups[1].Value.Length == 0) { start = requested > 0 ? Math.Max(0, total - requested) : total; }
+                    else end = Math.Min(requested, total - 1);
                 }
             }
         }
@@ -264,6 +348,7 @@ internal sealed class StreamProxyHandler : IResourceHandler
             _status = 416;
             _length = 0;
             _remaining = 0;
+            _contentRange = $"bytes */{total}";
             return true;
         }
 
@@ -271,14 +356,13 @@ internal sealed class StreamProxyHandler : IResourceHandler
         _length = end - start + 1;
         _remaining = _length;
         _contentRange = string.IsNullOrEmpty(range) ? null : $"bytes {start}-{end}/{total}";
-        _mimeType = path.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase) ? "audio/mpeg" : "application/octet-stream";
+        _mimeType = mimeType;
 
         if (_headOnly)
         {
             return true;
         }
 
-        var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
         stream.Seek(start, SeekOrigin.Begin);
         _preSkippedBytes = start;
         _body = stream;
@@ -305,9 +389,11 @@ internal sealed class StreamProxyHandler : IResourceHandler
         var buffer = new byte[want];
         try
         {
-            var read = _body.Read(buffer, 0, buffer.Length);
+            var read = _body.ReadAsync(buffer.AsMemory(), _cancel.Token).AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(35), _cancel.Token).GetAwaiter().GetResult();
             if (read <= 0)
             {
+                if (_remaining > 0) throw new IOException("音频流在预期长度前中断。");
                 bytesRead = 0;
                 return false;
             }
@@ -322,9 +408,16 @@ internal sealed class StreamProxyHandler : IResourceHandler
 
             return true;
         }
+        catch (Exception) when (_cancel.IsCancellationRequested)
+        {
+            bytesRead = -2;
+            return false;
+        }
         catch (Exception ex)
         {
             Log($"读取中断 {_id}: {ex.Message}");
+            StreamRegistry.MarkFailed(_id, StreamRegistry.CanRecover(ex));
+            Dispose();
             bytesRead = -2;
             return false;
         }
@@ -338,6 +431,7 @@ internal sealed class StreamProxyHandler : IResourceHandler
             200 => "OK",
             206 => "Partial Content",
             416 => "Range Not Satisfiable",
+            502 => "Bad Gateway",
             _ => string.Empty,
         };
         response.MimeType = _mimeType;
@@ -351,6 +445,7 @@ internal sealed class StreamProxyHandler : IResourceHandler
 
         contentLength = _length;
         Trace.WriteLine($"stream:// {_id} headers status={_status} length={_length} range={_contentRange}");
+        PlaybackLog.Write("stream", "response", new { source = $"stream://media/{_id}", status = _status, length = _length, range = _contentRange, mime = _mimeType });
         redirectUrl = string.Empty;
     }
 
@@ -419,11 +514,13 @@ internal sealed class StreamProxyHandler : IResourceHandler
     public void Cancel()
     {
         Trace.WriteLine($"stream:// {_id} cancel read={_bytesRead} remaining={_remaining}");
+        PlaybackLog.Write("stream", "request_cancel", new { source = $"stream://media/{_id}", bytesRead = _bytesRead, remaining = _remaining });
         Dispose();
     }
 
     public void Dispose()
     {
+        _cancel.Cancel();
         try
         {
             _body?.Dispose();
@@ -436,5 +533,7 @@ internal sealed class StreamProxyHandler : IResourceHandler
         _body = null;
         _response?.Dispose();
         _response = null;
+        _client?.Dispose();
+        _client = null;
     }
 }

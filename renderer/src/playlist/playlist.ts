@@ -28,7 +28,7 @@ export interface PlaylistData {
 export interface PlaylistState {
   items: readonly PlaylistTrack[]
   currentId: string | null
-  status: 'idle' | 'resolving' | 'loading' | 'playing' | 'paused' | 'ended' | 'error'
+  status: 'idle' | 'resolving' | 'loading' | 'buffering' | 'playing' | 'paused' | 'ended' | 'error'
   error: string
   source: PlaybackSource | null
   mode: PlaybackMode
@@ -84,7 +84,7 @@ export function createPlaylist(
       patch({ source, status: 'loading' })
       target.load(source)
       await target.play()
-      if (token === generation && !hasError()) patch({ status: 'playing' })
+      if (token === generation && !hasError() && !['buffering', 'paused'].includes(state.status)) patch({ status: 'playing' })
     } catch (error) {
       if (token === generation) patch({ status: 'error', error: error instanceof Error ? error.message : String(error) })
     }
@@ -100,9 +100,10 @@ export function createPlaylist(
     if (!state.currentId) return play()
     if (!state.source || !player || state.status === 'error' || state.status === 'ended') return play()
     const token = ++generation
+    patch({ status: 'loading' })
     try {
       await player.play()
-      if (token === generation && !hasError()) patch({ status: 'playing' })
+      if (token === generation && !hasError() && !['buffering', 'paused'].includes(state.status)) patch({ status: 'playing' })
     } catch (error) {
       if (token === generation) fail(String(error))
     }
@@ -158,7 +159,7 @@ export function createPlaylist(
   function remove(id: string): void {
     const oldIndex = index()
     const isCurrent = id === state.currentId
-    const shouldContinue = ['playing', 'loading', 'resolving'].includes(state.status)
+    const shouldContinue = ['playing', 'loading', 'buffering', 'resolving'].includes(state.status)
     const items = state.items.filter((item) => item.id !== id)
     const history = state.history.filter((entry) => entry !== id)
     if (!isCurrent) { patch({ items, history }); return }
@@ -193,9 +194,15 @@ export function createPlaylist(
   }
 
   function syncPlaying(playing: boolean): void {
-    if (['loading', 'playing', 'paused'].includes(state.status) || (playing && state.status === 'ended')) {
+    if (['loading', 'buffering', 'playing', 'paused'].includes(state.status) || (playing && state.status === 'ended')) {
       patch({ status: playing ? 'playing' : 'paused' })
     }
+  }
+
+  function syncBuffering(loading: boolean, playing: boolean): void {
+    if (!state.currentId || !['loading', 'buffering', 'playing'].includes(state.status)) return
+    if (loading && playing) patch({ status: 'buffering' })
+    else if (!loading && state.status === 'buffering') patch({ status: playing ? 'playing' : 'paused' })
   }
 
   return {
@@ -205,6 +212,6 @@ export function createPlaylist(
       return () => { listeners.delete(listener) }
     },
     add, play, pause, resume, next, previous, ended, remove, clear, connect, fail, syncPlaying,
-    setMode, canNext, canPrevious,
+    setMode, canNext, canPrevious, syncBuffering,
   }
 }

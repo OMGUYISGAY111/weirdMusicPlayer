@@ -8,7 +8,7 @@ const flush = () => new Promise((resolve) => setImmediate(resolve))
 function createPlayer() {
   const listeners = new Map()
   const element = { ended: false }
-  const state = { error: null }
+  const state = { error: null, loading: false, playing: false }
   const loads = []
   const emit = (event) => { for (const callback of listeners.get(event) ?? []) callback() }
   return {
@@ -19,10 +19,11 @@ function createPlayer() {
       return () => listeners.get(event).delete(handler)
     },
     load(source) { loads.push(source); element.ended = false },
-    async play() { emit('play') },
+    async play() { state.playing = true; emit('play') },
     pause() { emit('pause') },
     finish() { element.ended = true; emit('pause'); emit('ended') },
     error() { state.error = '播放出错'; emit('error') },
+    buffering(loading) { state.loading = loading; emit('statechange') },
   }
 }
 
@@ -51,6 +52,24 @@ test('播放器只发事件，适配层通知列表，列表决定结束后重�
   player.finish()
   await flush()
   assert.equal(player.loads.length, 4)
+})
+
+test('缓冲等待不切歌、不改变历史，恢复后仍播放当前曲目', async () => {
+  const queue = createPlaylist(async () => ({ url: 'stream://media/a' }))
+  const player = createPlayer()
+  const disconnect = connectPlaylistPlayback(queue, player)
+  queue.add({ id: 'a', title: 'A', source: { kind: 'audio', url: 'a.mp3' } })
+  queue.add({ id: 'b', title: 'B', source: { kind: 'audio', url: 'b.mp3' } })
+  await queue.play('a')
+  player.buffering(true)
+  assert.equal(queue.snapshot().status, 'buffering')
+  await queue.ended()
+  assert.equal(queue.snapshot().currentId, 'a')
+  assert.deepEqual(queue.snapshot().history, ['a'])
+  player.buffering(false)
+  assert.equal(queue.snapshot().status, 'playing')
+  assert.equal(player.loads.length, 1)
+  disconnect()
 })
 
 test('播放器暂停与出错事件同步到列表，不触发模式切歌', async () => {

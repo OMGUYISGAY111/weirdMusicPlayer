@@ -24,6 +24,9 @@ internal static class Program
         try
         {
             options = StartupOptions.Parse(args);
+            PlaybackLog.Initialize(options.UserDataDir);
+            PlaybackLog.Write("app", "startup", new { version = typeof(Program).Assembly.GetName().Version?.ToString(), dev = options.Dev,
+                runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription, os = Environment.OSVersion.VersionString });
             target = WebTarget.Resolve(options);
         }
         catch (Exception ex)
@@ -48,6 +51,10 @@ internal static class Program
 
         try
         {
+            Application.ThreadException += (_, e) => { PlaybackLog.Exception("app", "ui_exception", e.Exception); ShowFatal("界面线程异常", e.Exception); };
+            AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            { if (e.ExceptionObject is Exception error) { PlaybackLog.Exception("app", "unhandled_exception", error); PlaybackLog.Shutdown(); } };
+            TaskScheduler.UnobservedTaskException += (_, e) => PlaybackLog.Exception("app", "unobserved_task", e.Exception);
             Application.Run(new MainForm(target, options));
         }
         catch (Exception ex)
@@ -60,6 +67,8 @@ internal static class Program
             {
                 Cef.Shutdown();
             }
+            PlaybackLog.Write("app", "shutdown");
+            PlaybackLog.Shutdown();
         }
     }
 
@@ -164,6 +173,8 @@ internal static class Program
 
     private static void ShowFatal(string title, Exception ex)
     {
+        PlaybackLog.Exception("app", "fatal", ex, new { title });
+        PlaybackLog.FlushAsync().Wait(TimeSpan.FromSeconds(2));
         MessageBox.Show(
             $"{ex.GetType().Name}: {ex.Message}\n\n{ex.StackTrace}",
             $"{title} - 音乐播放器",

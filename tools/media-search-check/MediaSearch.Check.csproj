@@ -9,5 +9,7 @@
     <Compile Include="../../host/MediaSearch.cs" Link="MediaSearch.cs" />
     <Compile Include="../../host/Bilibili.cs" Link="Bilibili.cs" />
     <Compile Include="../../host/Youtube.cs" Link="Youtube.cs" />
+    <Compile Include="../../host/YoutubeStreamResolver.cs" Link="YoutubeStreamResolver.cs" />
+    <Compile Include="../../host/RemoteAudio.cs" Link="RemoteAudio.cs" />
   </ItemGroup>
 </Project>

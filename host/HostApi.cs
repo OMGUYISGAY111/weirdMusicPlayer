@@ -71,36 +71,98 @@ internal sealed class HostApi
         return StreamRegistry.Register(url.Trim(), headersJson);
     }
 
+    /// <summary>不依赖 CEF 媒体 error 事件，明确报告后台音轨读取/解码失败。</summary>
+    public string GetStreamError(string url) => StreamRegistry.GetError(url);
+
+    public void RecordPlaybackLog(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json) || json.Length > 24000) return;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var data = doc.RootElement;
+            var eventName = data.TryGetProperty("event", out var name) ? name.GetString() ?? "unknown" : "unknown";
+            PlaybackLog.Write("renderer", eventName, data.TryGetProperty("data", out var details) ? details : default,
+                data.TryGetProperty("level", out var level) ? level.GetString() ?? "info" : "info");
+        }
+        catch { }
+    }
+
+    public async Task OpenLogFolder()
+    {
+        await PlaybackLog.FlushAsync();
+        if (string.IsNullOrEmpty(PlaybackLog.DirectoryPath)) return;
+        Process.Start(new ProcessStartInfo("explorer.exe") { Arguments = $"\"{PlaybackLog.DirectoryPath}\"", UseShellExecute = true });
+    }
+
+    public string GetStreamFailure(string url) => JsonSerializer.Serialize(new
+    {
+        message = StreamRegistry.GetError(url), recoverable = StreamRegistry.IsRecoverable(url),
+    }, JsonOptions);
+
+    /// <summary>刷新原始来源并注册新流；恢复位置由播放器持有，不写音频文件。</summary>
+    public string RecoverStream(string url, string supportedTypesJson)
+    {
+        PlaybackLog.Write("resolver", "recovery_requested", new { source = url });
+        try
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != "stream" || uri.Host != "media"
+                || !StreamRegistry.TryGet(uri.AbsolutePath.Trim('/'), out var descriptor))
+                throw new InvalidOperationException("播放来源已失效，请重新选择歌曲。");
+            var track = descriptor.Track;
+            if (descriptor.LocalPath != null) throw new InvalidOperationException("本地文件无法加载，请检查文件是否存在。");
+            if (track?.SourceKind == "bilibili") track = BilibiliResolver.ResolveAsync(track.OriginalUrl).GetAwaiter().GetResult();
+            else if (track?.SourceKind == "youtube") track = YoutubeResolver.ResolveAsync(track.OriginalUrl, track.Proxy).GetAwaiter().GetResult();
+            var next = track == null ? StreamRegistry.Register(descriptor.Url, JsonSerializer.Serialize(descriptor.Headers))
+                : AudioStreamRegistration.Register(track, supportedTypesJson).Url;
+            PlaybackLog.Write("resolver", "recovery_resolved", new { previousSource = url, source = next, trackId = track?.Id });
+            return JsonSerializer.Serialize(new { url = next }, JsonOptions);
+        }
+        catch (Exception error)
+        {
+            // 平台临时风控和网络不可达可以等待；删除、权限限制及解码配置问题需明确报错。
+            var recoverable = StreamRegistry.CanRecover(error) || error.Message.Contains("412")
+                || error.Message.Contains("code=-500") || error.Message.Contains("超时")
+                || error.Message.Contains("timed out", StringComparison.OrdinalIgnoreCase)
+                || error.Message.Contains("Unable to download", StringComparison.OrdinalIgnoreCase)
+                || error.Message.Contains("Connection", StringComparison.OrdinalIgnoreCase);
+            PlaybackLog.Exception("resolver", "recovery_failed", error, new { source = url, recoverable });
+            return JsonSerializer.Serialize(new { error = error.Message, recoverable }, JsonOptions);
+        }
+    }
+
     /// <summary>
-    /// 解析 B站 视频地址：取 DASH 音频 -> ffmpeg 转 mp3 -> 缓存，返回可直接播的 stream:// 地址。
-    /// 阻塞时间取决于下载+转码（几分钟的视频约 5~20 秒），前端应显示“解析中”。
+    /// 解析 B站 音轨，按实际解码能力选择直接代理或实时转码；不下载音频文件。
     /// 返回 JSON：{ ok, bvid, title, artist, duration, streamUrl, cached, error }
     /// </summary>
-    public string ResolveBilibili(string url)
+    public string ResolveBilibili(string url, string supportedTypesJson = "[]")
     {
+        PlaybackLog.Write("resolver", "bilibili_start", new { trackId = BilibiliResolver.ExtractBvid(url) });
         try
         {
             var track = BilibiliResolver
-                .ResolveAsync(url ?? string.Empty, _form.Options.UserDataDir)
+                .ResolveAsync(url ?? string.Empty)
                 .GetAwaiter()
                 .GetResult();
 
-            var streamUrl = StreamRegistry.RegisterLocalFile(track.Mp3Path);
+            var playback = AudioStreamRegistration.Register(track, supportedTypesJson);
 
             return JsonSerializer.Serialize(new
             {
                 ok = true,
-                bvid = track.Bvid,
+                bvid = track.Id,
                 title = track.Title,
                 artist = track.Artist,
                 duration = track.Duration,
-                streamUrl,
-                cached = track.FromCache,
+                streamUrl = playback.Url,
+                playbackMode = playback.Mode,
+                cached = false,
                 error = (string?)null,
             }, JsonOptions);
         }
         catch (Exception ex)
         {
+            PlaybackLog.Exception("resolver", "bilibili_failed", ex);
             return JsonSerializer.Serialize(new
             {
                 ok = false,
@@ -116,35 +178,38 @@ internal sealed class HostApi
     }
 
     /// <summary>
-    /// 解析 YouTube 地址：yt-dlp 取 bestaudio（webm/opus）→ ffmpeg 转 mp3 → 缓存，
+    /// 解析 YouTube 地址：yt-dlp 仅取流地址，优先直接播放，不兼容时实时转码，
     /// 返回可直接播的 stream:// 地址。返回 JSON 结构同 ResolveBilibili。
     /// </summary>
-    public string ResolveYouTube(string url)
+    public string ResolveYouTube(string url, string supportedTypesJson = "[]")
     {
+        PlaybackLog.Write("resolver", "youtube_start");
         try
         {
             var proxy = _form.Options.Proxy ?? SystemProxy.Detect();
             var track = YoutubeResolver
-                .ResolveAsync(url ?? string.Empty, _form.Options.UserDataDir, proxy)
+                .ResolveAsync(url ?? string.Empty, proxy, preferOpus: AudioStreamRegistration.SupportedTypes(supportedTypesJson).Contains("audio/webm; codecs=\"opus\""))
                 .GetAwaiter()
                 .GetResult();
 
-            var streamUrl = StreamRegistry.RegisterLocalFile(track.Mp3Path);
+            var playback = AudioStreamRegistration.Register(track, supportedTypesJson);
 
             return JsonSerializer.Serialize(new
             {
                 ok = true,
-                bvid = track.VideoId,
+                bvid = track.Id,
                 title = track.Title,
                 artist = track.Artist,
                 duration = track.Duration,
-                streamUrl,
-                cached = track.FromCache,
+                streamUrl = playback.Url,
+                playbackMode = playback.Mode,
+                cached = false,
                 error = (string?)null,
             }, JsonOptions);
         }
         catch (Exception ex)
         {
+            PlaybackLog.Exception("resolver", "youtube_failed", ex);
             return JsonSerializer.Serialize(new
             {
                 ok = false,

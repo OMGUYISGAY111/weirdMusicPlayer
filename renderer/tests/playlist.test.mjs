@@ -235,3 +235,16 @@ test('循环模式自动切歌失败时停在错误状态，不无限跳过或�
   await queue.ended()
   assert.equal(queue.snapshot().status, 'error')
 })
+
+test('等待播放完成期间由播放器暂停，旧 play Promise 返回不能覆盖暂停状态', async () => {
+  const queue = createPlaylist(async () => ({ url: 'a.mp3' }))
+  const pending = deferred()
+  queue.connect({ load() {}, pause() {}, play: () => pending.promise })
+  queue.add(track('a'))
+  const playing = queue.play()
+  await flush()
+  queue.syncPlaying(false)
+  pending.resolve()
+  await playing
+  assert.equal(queue.snapshot().status, 'paused')
+})

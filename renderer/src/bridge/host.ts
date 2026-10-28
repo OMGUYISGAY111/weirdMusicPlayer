@@ -9,6 +9,8 @@
  *   - 纯浏览器里 `pnpm dev:web` 也能跑，所有调用自动降级为本地模拟值。
  */
 import { reactive } from 'vue'
+import { supportedAudioTypes } from '../playback/supportedAudioTypes'
+import type { StreamRecoveryResult } from '../playback/streamRecovery'
 
 /** C# 侧 GetHostInfo() 返回的 JSON 结构 */
 export interface HostInfo {
@@ -35,15 +37,20 @@ export interface CefHostApi {
   openDevTools(): Promise<void>
   setZoomLevel(level: number): Promise<void>
   openUserDataFolder(): Promise<void>
+  openLogFolder(): Promise<void>
+  recordPlaybackLog(json: string): Promise<void>
   /**
    * 注册宿主代理的媒体地址：返回 `stream://media/<id>`，可直接当 src 用。
    * 用来播 http 源（prod 下 secure origin 不能直接加载 http 媒体）或注入请求头。
    */
   registerStream(url: string, headersJson: string): Promise<string>
+  getStreamError(url: string): Promise<string>
+  getStreamFailure(url: string): Promise<string>
+  recoverStream(url: string, supportedTypesJson: string): Promise<string>
   /** 解析 B站 地址：返回 JSON 字符串（ok / title / artist / duration / streamUrl / error） */
-  resolveBilibili(url: string): Promise<string>
-  /** 解析 YouTube 地址（yt-dlp + ffmpeg 转 mp3），返回结构同 resolveBilibili */
-  resolveYouTube(url: string): Promise<string>
+  resolveBilibili(url: string, supportedTypesJson: string): Promise<string>
+  /** 解析 YouTube 音轨，按解码能力选择直接流播放或实时转码 */
+  resolveYouTube(url: string, supportedTypesJson: string): Promise<string>
   /** 按关键词搜 B站 视频，返回 MediaSearchResult 的 JSON 字符串 */
   searchBilibili(keyword: string, limit: number): Promise<string>
   /** 按关键词搜 YouTube 视频（yt-dlp ytsearchN），返回结构同 searchBilibili */
@@ -92,8 +99,10 @@ export interface BilibiliResult {
   duration: number
   /** 可直接当 src 用的 stream:// 地址 */
   streamUrl: string | null
-  /** 是否命中本地缓存（已转码过） */
+  /** 兼容旧返回结构；流播放不会生成缓存，固定为 false */
   cached: boolean
+  /** 原始流直接播放，或按需实时转码；两者均不生成音频文件。 */
+  playbackMode?: 'direct' | 'transcode'
   error: string | null
 }
 
@@ -207,6 +216,11 @@ export const host = {
     return invoke((api) => api.openUserDataFolder(), undefined)
   },
 
+  openLogFolder(): Promise<void> { return invoke((api) => api.openLogFolder(), undefined) },
+  recordPlaybackLog(event: string, data: Record<string, unknown>, level = 'info'): Promise<void> {
+    return invoke((api) => api.recordPlaybackLog(JSON.stringify({ event, data, level })), undefined)
+  },
+
   /**
    * 让宿主代理一个媒体地址，返回 `stream://media/<id>`。
    * 浏览器预览模式没有宿主，直接返回原地址（浏览器里 http 本来就能播）。
@@ -216,15 +230,30 @@ export const host = {
     return invoke((api) => api.registerStream(url, headersJson), url)
   },
 
+  getStreamError(url: string): Promise<string> {
+    return invoke((api) => api.getStreamError(url), '')
+  },
+
+  async getStreamFailure(url: string): Promise<{ message: string; recoverable: boolean }> {
+    const raw = await invoke((api) => api.getStreamFailure(url), '')
+    return raw ? JSON.parse(raw) : { message: '', recoverable: false }
+  },
+
+  async recoverStream(url: string): Promise<StreamRecoveryResult> {
+    const types = JSON.stringify(supportedAudioTypes())
+    const raw = await invoke((api) => api.recoverStream(url, types), '')
+    return raw ? JSON.parse(raw) : { recoverable: true }
+  },
+
   /**
-   * 让宿主解析 B站 地址（取音频 → ffmpeg 转 mp3 → 缓存），返回可直接播放的 stream:// 地址。
+   * 让宿主解析 B站 音轨，返回直接代理或实时转码的 stream:// 地址。
    * 浏览器预览模式没有宿主，直接返回失败。
    */
   async resolveBilibili(url: string): Promise<BilibiliResult> {
     return this.resolveWith('resolveBilibili', url, '浏览器预览模式没有宿主，无法解析 B站')
   },
 
-  /** 解析 YouTube（宿主用 yt-dlp 取流 + ffmpeg 转 mp3，再走 stream:// 本地播放） */
+  /** 解析 YouTube：yt-dlp 只取流地址，不下载媒体文件 */
   async resolveYouTube(url: string): Promise<BilibiliResult> {
     return this.resolveWith('resolveYouTube', url, '浏览器预览模式没有宿主，无法解析 YouTube')
   },
@@ -235,7 +264,8 @@ export const host = {
     url: string,
     fallbackMessage: string,
   ): Promise<BilibiliResult> {
-    const raw = await invoke<string | null>((api) => api[method](url), null)
+    const supported = JSON.stringify(supportedAudioTypes())
+    const raw = await invoke<string | null>((api) => api[method](url, supported), null)
     if (!raw) {
       return {
         ok: false,

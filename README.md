@@ -290,84 +290,40 @@ dotnet run --project tools/playback-check -c Release -- url D:/MusicPlayerData/b
 
 2026-10-28 曾在预加载元数据后复现约 2.6 秒卡住：CEF 从 `bytes=65536-` 续传时调用 `Skip`，旧实现直接返回失败。现已实现同步 `Skip`，并确认 `Open` 已经由本地 Seek 或上游 206 跳过的偏移，避免再跳一次；同步使用完毕的 CEF 回调及时释放。仅默认 `preload=auto` 的短时播放不足以覆盖这个问题。
 
-### B站 音频（已实现）
+### B站 / YouTube 在线音频（已实现）
 
-粘一个 B站 视频地址（或 BV 号）给宿主，自动解析出音频、转码成 mp3、缓存复用：
+卡顿、缓冲恢复和报错会自动记录到当前数据目录的 `logs` 文件夹；可从首页「打开诊断日志」或播放栏「打开日志」查看，详情见 [诊断日志说明](docs/playback-logs.md)。
 
-```
-B站 视频地址 / BV 号
-   │
-   ├─ view 接口            → title / owner / cid / duration
-   ├─ nav 接口             → wbi_img 的 img_key + sub_key（未登录也能拿到）
-   ├─ wbi 签名 + playurl   → dash.audio[]（30216 HE-AAC / 30232 / 30280 AAC-LC 192K）
-   ├─ 带 Referer+UA 下载   → <数据目录>\bili\<bvid>.m4s
-   └─ ffmpeg 转 mp3        → <数据目录>\bili\<bvid>.mp3（+ .json 元数据，命中即复用）
-                                │
-                                └─ 注册为 stream://media/<id> 给页面播放
+现已使用流式播放，不再下载整首歌并转成 MP3 文件：
+
+```text
+视频原始链接 → 解析音轨和元数据 → 根据 CEF 实际解码能力选择：
+  支持的编码 → HTTP 分块代理 → 播放器
+  不支持的编码 → FFmpeg 内存管道实时转码 → 可按需 seek 的虚拟 WAV → 播放器
 ```
 
-**为什么必须转码**：B站 的 DASH 音频全是 AAC（`mimeType: audio/mp4`，`codec` `mp4a.40.2`），当前 CEF 官方构建不含 AAC 解码器（见上面的编解码实测），直接播会 `no supported sources`。ffmpeg 转成 mp3 后走 `stream://` 本地文件代理，seek/缓冲都正常。
+B站优先 AAC-LC 192K，当前 CEF 不支持时按需转码；YouTube 优先 WebM/Opus 直接流播放。视频解析器不写入音频文件，旧缓存保留但不再用于这条播放链路。播放列表仅保存原始页面地址，切歌和重试时重新解析临时流。
+
+完整说明、限制和真实 CEF 验证命令见 [流式播放说明](docs/streaming-playback.md)。
 
 | 项 | 说明 |
 | --- | --- |
-| 宿主文件 | [host/Bilibili.cs](host/Bilibili.cs)（wbi 签名 / playurl / 下载 / 转码 / 缓存）、[host/StreamProxy.cs](host/StreamProxy.cs) 的 `RegisterLocalFile` |
-| JS 入口 | `host.resolveBilibili(url)` → `{ ok, title, artist, duration, streamUrl, cached, error }` |
-| ffmpeg 查找顺序 | `MUSICPLAYER_FFMPEG` 环境变量 → `PATH` → WinGet 安装目录（`Gyan.FFmpeg*`）；找不到会返回明确提示 |
-| 缓存 | `<数据目录>\bili\<bvid>.mp3` + `<bvid>.json`，同一 BV 第二次直接命中（status 里会标「命中缓存」） |
-| 网络 | B站搜索、签名、视频信息和音频 CDN 均直连（`UseProxy=false`），避免继承 YouTube 使用的系统代理后触发 `code=-412 request was banned`。CEF 与 YouTube 的代理配置仍独立生效 |
-| 画质/码率 | 未登录拿 **30280 = AAC-LC 192 Kbps**；更高（Hi-Res / 杜比）需要 `SESSDATA` Cookie，当前未实现 |
+| JS 入口 | `host.resolveBilibili(url)` / `host.resolveYouTube(url)` → `{ ok, title, artist, duration, streamUrl, playbackMode, cached: false, error }` |
+| 宿主实现 | `Bilibili.cs` 取 DASH 音轨，`YoutubeStreamResolver.cs` 用 yt-dlp 仅取元数据，`StreamProxy.cs` 代理，`VirtualWaveStream.cs` 实时解码和跳转 |
+| ffmpeg 查找 | `MUSICPLAYER_FFMPEG` → PATH → WinGet 的 `Gyan.FFmpeg*`；仅实时转码需要 |
+| yt-dlp 查找 | `MUSICPLAYER_YTDLP` → PATH → Python313 用户脚本目录 → `python -m yt_dlp` |
+| yt-dlp 安装 | `python -m pip install --user -U "yt-dlp[default]"`，含匹配的签名解析依赖 |
+| JavaScript 运行时 | 自动启用 PATH 中的 Node 22+，可用 `MUSICPLAYER_NODE` 指定；未发现 Node 时使用 yt-dlp 默认运行时 |
+| 网络 | B站 API/CDN 直连；YouTube 解析及媒体请求使用相同代理，沿用 `--proxy` / `MUSICPLAYER_PROXY` / WinINET 配置 |
+| 播放模式 | 播放器只发出结束信号，列表决定顺序、列表循环、单曲循环或随机切歌 |
 
-**实测（prod，`app://web`）**：
-
-| 检查项 | 结果 |
-| --- | --- |
-| 解析 `BV1GJ411x7h7` | `【官方 MV】Never Gonna Give You Up - Rick Astley` / `索尼音乐中国` ✅ |
-| 时长 | `212.3s`（视频 213s）✅ |
-| 播放 | 播放按钮显示「暂停」（正在播）✅ |
-| seek 到 50% | `106s`，期望 `106s` ✅ |
-| 二次解析 | 命中缓存，mp3 `4978KB` 直接复用 ✅ |
-
-> 合规提醒：只适合个人本地使用。解析播放地址属于绕过平台分发链路，公开分发/商用请走 B站 官方开放接口与授权。
-
-2026-10-28 修复验证：`BV183DFBkEBV` 在原实现下复现 `取视频信息失败：code=-412 request was banned`；改用直连后成功获取视频信息、下载音频并转码为 MP3（视频时长 167 秒）。遇到 HTTP 412 或接口 code=-412 会显示网络排查提示；`UseProxy=false` 无法绕过 VPN/TUN 在系统网络层接管的流量，此时需在对应客户端为 B站设置直连。修改宿主代码后需退出并重新运行 `pnpm dev` 或 `pnpm start`，只刷新页面不会加载新的 C# 代码。
-
-### YouTube 音频（已实现）
-
-和 B站 复用同一条「下载 → 转码 → 缓存 → `stream://` 本地播放」链路，只是取流换成 `yt-dlp`：
-
-```
-YouTube 地址
-   └─ yt-dlp -f "bestaudio/best[acodec!=none]" -x --audio-format mp3（首次约 10~40s）
-        └─ <数据目录>\youtube\<videoId>.mp3 + index.json（url 命中即跳过 yt-dlp）
-             └─ stream://media/<id> 给页面播放
-```
-
-| 项 | 说明 |
-| --- | --- |
-| 宿主文件 | [host/Youtube.cs](host/Youtube.cs) |
-| JS 入口 | `host.resolveYouTube(url)`，返回结构同 `resolveBilibili` |
-| yt-dlp 查找 | `MUSICPLAYER_YTDLP` → PATH 上的 `yt-dlp.exe` → `%APPDATA%\Python\Python313\Scripts\yt-dlp.exe` → `python -m yt_dlp` |
-| 安装 yt-dlp | `python -m pip install --user -U "yt-dlp[default]"`，需要包含与 yt-dlp 匹配的 `yt-dlp-ejs` 签名解析脚本；镜像可加 `-i https://mirrors.aliyun.com/pypi/simple/` |
-| JavaScript 运行时 | YouTube 签名解析需要支持的运行时；项目自动启用 PATH 中的 `node.exe`（Node 22+），也可用 `MUSICPLAYER_NODE` 指定完整路径。没有 Node 时仍允许 yt-dlp 使用默认的 Deno |
-| 代理 | 不传 `--proxy` 时自动读 WinINET 注册表（本机是 `127.0.0.1:7897`）；也可 `--proxy http://127.0.0.1:7897` 或 `MUSICPLAYER_PROXY` |
-| 缓存 | `<数据目录>\youtube\<id>.mp3` + `index.json`，`youtu.be/xxx` 与 `watch?v=xxx` 归一成同一个 key |
-
-**实测（prod，`app://web`）**：
-
-| 检查项 | 结果 |
-| --- | --- |
-| 解析 `watch?v=dQw4w9WgXcQ` | `Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)` / `Rick Astley` ✅ |
-| 时长 | `213.0s` ✅ |
-| 播放 / seek 50% | 正在播 / `107s`（期望 107）✅ |
-| 二次解析（`youtu.be` 短链） | 命中缓存，`3657KB` 直接复用 ✅ |
-
-**为什么不用 iframe 播放器**：实测 `app://web` 和 http 两种 origin 下，`iframe_api` 与 embed 页都能拿到 200，但 iframe 文档始终不触发 `load`、画面空白 —— 播放器资源在代理不稳时会挂住；而且 iframe 方案拿不到缓冲区间、无法和自绘进度条精确同步。yt-dlp 取文件这条路一次性下载即完，播放行为与本地文件完全一致。
+2026-10-28 验证：真实 CEF 中合成 WebM/Opus 的直接流播放、实时转码的前后跳转和结束事件通过；B站 `BV1GJ411x7h7` 约 212 秒音轨的在线转码播放、前后跳转及自然结束通过。YouTube 当前网络出口要求登录/人机验证，尚未完成本次真实平台播放验证。
 
 #### YouTube 报 Requested format is not available
 
 若 `--list-formats` 只列出 `sb0`～`sb3` 的 storyboard 图片，并出现 `Signature solving failed` 或 `n challenge solving failed`，说明签名解析未完成，不能据此认为原视频没有音轨。按 [yt-dlp EJS 官方说明](https://github.com/yt-dlp/yt-dlp/wiki/EJS)安装匹配的 `yt-dlp-ejs` 并启用支持的 JS 运行时。Node 已安装也需要传入 `--js-runtimes node`，宿主现在自动处理此参数；使用 Python 安装的 yt-dlp 可运行上表中的 `yt-dlp[default]` 安装命令。解析器保留警告用于诊断，不再用 `--no-warnings` 隐藏签名失败。
 
-音频格式选择优先 `bestaudio`，没有独立音轨时回退到含音频的视频格式，继续由 ffmpeg 提取 MP3。2026-10-28 用 `-6NfPHeWxI4` 实测：原配置仅返回 storyboard，启用 Node 并安装配套 EJS 后成功下载、转码为约 166 秒 MP3。可用以下命令复现下载检查（Cookie 路径按实际配置）：
+当前解析器在 CEF 支持时优先选择 WebM/Opus，否则选择可用音轨并实时转码。yt-dlp 使用 `--skip-download --dump-single-json`，仅解析元数据。可用以下命令检查取流结果（Cookie 路径按实际配置）：
 
 ```powershell
 $env:MUSICPLAYER_YOUTUBE_COOKIES = 'D:\MusicPlayerData\youtube-cookies.txt'
@@ -405,7 +361,7 @@ Cookie 文件优先于浏览器配置；文件不存在会直接提示。这里�
 
 ## 按歌曲信息搜索视频
 
-启动 `pnpm dev` 或构建后 `pnpm start`，在首页点「打开搜索页」（`/#/search`）。歌曲名必填，作者和专辑可选；两个平台各自显示结果，默认各 6 条，支持打开、复制视频链接。搜索只获取视频信息，点击「解析播放」才会下载音频。
+启动 `pnpm dev` 或构建后 `pnpm start`，在首页点「打开搜索页」（`/#/search`）。歌曲名必填，作者和专辑可选；两个平台各自显示结果，默认各 6 条，支持打开、复制视频链接。搜索只获取视频信息，点击「立即播放」才会解析并在线接收音频，点击「加入列表」仅保存来源。
 
 可复用组件在 `renderer/src/components/VideoSearch.vue`，父页面通过 `result` 事件接收每个平台的结果：
 

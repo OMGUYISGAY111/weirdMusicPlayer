@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { createMediaElementController } from '@/playback/mediaElementController'
+import { createHostMediaController } from '@/playback/hostMediaController'
 import type { PlaybackController, PlaybackSnapshot } from '@/playback/types'
 
 interface Props {
@@ -45,7 +45,7 @@ const emit = defineEmits<{
  * 播放实现被隔离在 controller 里（见 src/playback/）：
  * 组件只做视图与交互，不直接操作媒体元素，以后接 HLS / YouTube 只需新增一个实现。
  */
-const controller = props.controller ?? createMediaElementController(props.defaultVolume)
+const controller = props.controller ?? createHostMediaController(props.defaultVolume)
 
 const progressEl = ref<HTMLElement | null>(null)
 
