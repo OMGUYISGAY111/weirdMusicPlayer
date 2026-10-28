@@ -27,6 +27,7 @@ internal sealed class StartupOptions
 {
     /// <summary>默认数据目录</summary>
     private const string DefaultUserDataDir = @"D:\MusicPlayerData";
+
     public bool Dev { get; private init; }
 
     public string? Url { get; private init; }
@@ -38,6 +39,9 @@ internal sealed class StartupOptions
     /// <summary>数据目录来自哪里，便于排查（显示在宿主信息里）</summary>
     public string UserDataSource { get; private init; } = "default";
 
+    /// <summary>可选代理（例如 http://127.0.0.1:7897）：同时给 CEF 和 yt-dlp 用</summary>
+    public string? Proxy { get; private init; }
+
     /// <summary>远程调试端口；null 表示 dev 时用默认 9222，非 dev 关闭</summary>
     public int? DebugPort { get; private init; }
 
@@ -47,6 +51,7 @@ internal sealed class StartupOptions
         string? url = null;
         string? webRoot = null;
         string? userData = null;
+        string? proxy = null;
         int? debugPort = null;
 
         for (var i = 0; i < args.Length; i++)
@@ -65,6 +70,9 @@ internal sealed class StartupOptions
                     break;
                 case "--user-data" when i + 1 < args.Length:
                     userData = args[++i];
+                    break;
+                case "--proxy" when i + 1 < args.Length:
+                    proxy = args[++i];
                     break;
                 case "--debug-port" when i + 1 < args.Length:
                     debugPort = ParsePort(args[++i]);
@@ -99,6 +107,7 @@ internal sealed class StartupOptions
             WebRoot = webRoot,
             UserDataDir = userDataDir,
             UserDataSource = source,
+            Proxy = proxy,
             DebugPort = debugPort,
         };
     }
@@ -122,9 +131,9 @@ internal sealed class StartupOptions
         }
 
         // 便携模式：exe 旁边的 portable.txt（内容随意，只要文件存在）
-        if (File.Exists(System.IO.Path.Combine(AppContext.BaseDirectory, "portable.txt")))
+        if (File.Exists(Path.Combine(AppContext.BaseDirectory, "portable.txt")))
         {
-            return (Prepare(System.IO.Path.Combine(AppContext.BaseDirectory, "data")), "便携模式 portable.txt");
+            return (Prepare(Path.Combine(AppContext.BaseDirectory, "data")), "便携模式 portable.txt");
         }
 
         // 默认放 D 盘。万一 D 盘不存在 / 不可写（换台机器、盘符被占用），
@@ -137,7 +146,7 @@ internal sealed class StartupOptions
         {
             Debug.WriteLine($"默认数据目录不可用，回退 LOCALAPPDATA：{ex.Message}");
 
-            var fallback = System.IO.Path.Combine(
+            var fallback = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "MusicPlayer",
                 "ver2");
@@ -150,11 +159,11 @@ internal sealed class StartupOptions
     private static string Normalize(string raw)
     {
         var expanded = Environment.ExpandEnvironmentVariables(raw.Trim().Trim('"'));
-        var absolute = System.IO.Path.IsPathRooted(expanded)
+        var absolute = Path.IsPathRooted(expanded)
             ? expanded
-            : System.IO.Path.Combine(AppContext.BaseDirectory, expanded);
+            : Path.Combine(AppContext.BaseDirectory, expanded);
 
-        return Prepare(System.IO.Path.GetFullPath(absolute));
+        return Prepare(Path.GetFullPath(absolute));
     }
 
     /// <summary>建目录并做一次写测试，失败时给出带路径的清晰错误（比 CEF 内部的报错好懂）</summary>
@@ -170,7 +179,7 @@ internal sealed class StartupOptions
                 $"无法创建数据目录：{path}\n请检查盘符是否存在、是否有写权限。\n{ex.Message}", ex);
         }
 
-        var probe = System.IO.Path.Combine(path, ".write-probe");
+        var probe = Path.Combine(path, ".write-probe");
         try
         {
             File.WriteAllText(probe, "ok");

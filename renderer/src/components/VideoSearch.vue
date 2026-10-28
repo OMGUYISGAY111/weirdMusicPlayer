@@ -1,0 +1,642 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { searchSongVideos, songKeyword } from '@/search/songVideoSearch'
+import {
+  host,
+  hostBridge,
+  type MediaSearchItem,
+  type MediaSearchResult,
+  type MediaSearchSource,
+} from '@/bridge/host'
+
+/**
+ * 按歌曲信息搜视频：填「歌曲名 / 作者 / 专辑」，同时搜 B站 和 YouTube，列出可点的视频链接。
+ *
+ * 搜索本身在宿主里做（renderer 直接 fetch 会被 CORS / CSP 拦住），
+ * 这里只负责拼关键词、并发调用、展示结果：
+ *   - 「打开」/ 点标题 → 交给宿主用系统浏览器打开（不会把 CEF 窗口导航走）
+ *   - 「复制链接」      → 复制视频页地址
+ *   - 「立即播放」      → emit('play', item)，由父页面决定如何播放
+ *   - 「加入列表」      → emit('add', item)，组件不依赖列表实现
+ */
+
+interface Props {
+  /** 每个平台最多返回几条（1~30，宿主侧也会夹紧） */
+  limit?: number
+}
+
+const props = withDefaults(defineProps<Props>(), { limit: 6 })
+
+const emit = defineEmits<{
+  /** 每个平台完成时返回实际视频链接；可由父页面保存或加入列表。 */
+  result: [result: MediaSearchResult]
+  /** 用户点了「立即播放」，参数是选中那条视频 */
+  play: [item: MediaSearchItem]
+  add: [item: MediaSearchItem]
+}>()
+
+type PanelState = 'idle' | 'loading' | 'done' | 'empty' | 'error'
+
+interface Panel {
+  key: MediaSearchSource
+  label: string
+  hint: string
+  state: PanelState
+  items: MediaSearchItem[]
+  error: string
+}
+
+function createPanel(key: MediaSearchSource, label: string, hint: string): Panel {
+  return { key, label, hint, state: 'idle', items: [], error: '' }
+}
+
+const song = defineModel<string>('song', { default: '' })
+const artist = defineModel<string>('artist', { default: '' })
+const album = defineModel<string>('album', { default: '' })
+
+// reactive 对象本身是代理，模板里直接读属性就能跟踪
+const bili = reactive<Panel>(createPanel('bilibili', '哔哩哔哩', 'bilibili.com'))
+const youtube = reactive<Panel>(createPanel('youtube', 'YouTube', 'youtube.com'))
+const panels: Panel[] = [bili, youtube]
+
+const requestSeq = ref(0)
+const copiedUrl = ref('')
+
+/** 搜索关键词 = 三个输入框里非空的字段，用空格拼起来 */
+const keyword = computed(() =>
+  songKeyword({ song: song.value, artist: artist.value, album: album.value }),
+)
+
+const searching = computed(() => panels.some((panel) => panel.state === 'loading'))
+const canSearch = computed(() => song.value.trim().length > 0 && !searching.value)
+const inHost = computed(() => hostBridge.ready)
+
+/** 宿主不可用（浏览器预览）或某平台报错时，给一个能直接点的网页版搜索 */
+const fallbackLinks = computed(() => {
+  const query = keyword.value.trim()
+  if (!query) return null
+  const encoded = encodeURIComponent(query)
+  return {
+    bilibili: `https://search.bilibili.com/all?keyword=${encoded}`,
+    youtube: `https://www.youtube.com/results?search_query=${encoded}`,
+  }
+})
+
+function applyResult(panel: Panel, result: MediaSearchResult): void {
+  panel.items = result.items
+  panel.error = result.error ?? ''
+  if (!result.ok || panel.error) {
+    panel.state = 'error'
+  } else {
+    panel.state = panel.items.length > 0 ? 'done' : 'empty'
+  }
+}
+
+async function search(): Promise<void> {
+  if (!canSearch.value) return
+
+  const seq = ++requestSeq.value
+  copiedUrl.value = ''
+  for (const panel of panels) {
+    panel.state = 'loading'
+    panel.error = ''
+    panel.items = []
+  }
+
+  await searchSongVideos(
+    { song: song.value, artist: artist.value, album: album.value },
+    {
+      bilibili: (query, limit) => host.searchBilibili(query, limit),
+      youtube: (query, limit) => host.searchYouTube(query, limit),
+    },
+    props.limit,
+    (result) => {
+      if (seq !== requestSeq.value) return
+      applyResult(result.source === 'bilibili' ? bili : youtube, result)
+      emit('result', result)
+    },
+  )
+}
+
+onBeforeUnmount(() => { requestSeq.value += 1 })
+defineExpose({ search, clear })
+
+function clear(): void {
+  requestSeq.value += 1
+  song.value = ''
+  artist.value = ''
+  album.value = ''
+  copiedUrl.value = ''
+  for (const panel of panels) {
+    panel.state = 'idle'
+    panel.error = ''
+    panel.items = []
+  }
+}
+
+function openItem(item: MediaSearchItem): void {
+  void host.openExternalUrl(item.url)
+}
+
+async function copyItem(item: MediaSearchItem): Promise<void> {
+  const ok = await copyText(item.url)
+  copiedUrl.value = ok ? item.url : ''
+  if (ok) {
+    window.setTimeout(() => {
+      if (copiedUrl.value === item.url) copiedUrl.value = ''
+    }, 1600)
+  }
+}
+
+/** 宿主没有「写剪贴板」接口，优先用 navigator.clipboard，再退回 execCommand */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // 非安全上下文 / 没权限：继续走兼容方案
+  }
+
+  try {
+    const area = document.createElement('textarea')
+    area.value = text
+    area.setAttribute('readonly', '')
+    area.style.position = 'fixed'
+    area.style.opacity = '0'
+    document.body.appendChild(area)
+    area.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(area)
+    return ok
+  } catch {
+    return false
+  }
+}
+
+/** 封面挂了就直接藏掉，留深色占位，不让破图占版面 */
+function hideBrokenImage(event: Event): void {
+  const image = event.target as HTMLImageElement | null
+  if (image) image.hidden = true
+}
+
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return ''
+  const total = Math.floor(seconds)
+  const hours = Math.floor(total / 3600)
+  const minutes = Math.floor((total % 3600) / 60)
+  const rest = total % 60
+  const pad = (value: number): string => String(value).padStart(2, '0')
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(rest)}` : `${minutes}:${pad(rest)}`
+}
+
+function formatPlayCount(count: number): string {
+  if (!Number.isFinite(count) || count <= 0) return ''
+  if (count >= 100_000_000) return `${(count / 100_000_000).toFixed(1)} 亿播放`
+  if (count >= 10_000) return `${(count / 10_000).toFixed(1)} 万播放`
+  return `${count} 播放`
+}
+
+function panelFallback(panel: Panel): string {
+  return fallbackLinks.value?.[panel.key] ?? ''
+}
+</script>
+
+<template>
+  <section class="vs">
+    <header class="vs-head">
+      <div>
+        <h2 class="vs-title">按歌曲信息找视频</h2>
+        <p class="vs-sub">
+          填歌名（必填），作者、专辑可选；关键词 = 各字段用空格拼接，同时搜 B站 和 YouTube。
+        </p>
+      </div>
+      <span class="vs-pill" :class="inHost ? 'ok' : 'warn'">
+        {{ inHost ? '宿主已连接' : '浏览器预览（无宿主）' }}
+      </span>
+    </header>
+
+    <form class="vs-form" @submit.prevent="search">
+      <label class="vs-field">
+        <span>歌曲名 <b>*</b></span>
+        <input v-model="song" placeholder="例：晴天" autocomplete="off" required />
+      </label>
+      <label class="vs-field">
+        <span>作者 / 歌手</span>
+        <input v-model="artist" placeholder="例：周杰伦" autocomplete="off" />
+      </label>
+      <label class="vs-field">
+        <span>专辑</span>
+        <input v-model="album" placeholder="例：叶惠美" autocomplete="off" />
+      </label>
+      <div class="vs-actions">
+        <button class="primary" type="submit" :disabled="!canSearch">
+          {{ searching ? '搜索中…' : '搜索' }}
+        </button>
+        <button type="button" @click="clear">清空</button>
+      </div>
+    </form>
+
+    <p class="vs-query">
+      关键词：<code>{{ keyword || '（还没填）' }}</code>
+      <span v-if="searching" class="vs-query-busy">搜索中，YouTube 首次通常要 3~10 秒…</span>
+    </p>
+
+    <div class="vs-grid">
+      <section v-for="panel in panels" :key="panel.key" class="vs-panel" aria-live="polite" :aria-busy="panel.state === 'loading'">
+        <header class="vs-panel-head">
+          <h3>
+            <span class="vs-dot" :class="panel.key" />
+            {{ panel.label }}
+          </h3>
+          <span class="vs-panel-meta">
+            <template v-if="panel.state === 'done'">{{ panel.items.length }} 条</template>
+            <template v-else>{{ panel.hint }}</template>
+          </span>
+        </header>
+
+        <p v-if="panel.state === 'loading'" class="vs-state">正在搜索 {{ panel.label }}…</p>
+
+        <div v-else-if="panel.state === 'error'" class="vs-state error">
+          <p>{{ panel.error }}</p>
+          <a
+            v-if="panelFallback(panel)"
+            :href="panelFallback(panel)"
+            target="_blank"
+            rel="noreferrer"
+            @click.prevent="host.openExternalUrl(panelFallback(panel))"
+          >
+            在浏览器里打开 {{ panel.label }} 搜索页 →
+          </a>
+        </div>
+
+        <p v-else-if="panel.state === 'empty'" class="vs-state">
+          没搜到结果。试试只填歌名，或者换个写法。
+        </p>
+
+        <p v-else-if="panel.state === 'idle'" class="vs-state">填好上面三项后点「搜索」。</p>
+
+        <ol v-else class="vs-list">
+          <li v-for="item in panel.items" :key="item.id" class="vs-item">
+            <a
+              class="vs-thumb"
+              :href="item.url"
+              target="_blank"
+              rel="noreferrer"
+              :title="`在浏览器打开：${item.title}`"
+              @click.prevent="openItem(item)"
+            >
+              <img
+                v-if="item.thumbnail"
+                :src="item.thumbnail"
+                alt=""
+                loading="lazy"
+                referrerpolicy="no-referrer"
+                @error="hideBrokenImage"
+              />
+              <span v-else class="vs-thumb-fallback" aria-hidden="true">▶</span>
+              <span v-if="formatDuration(item.duration)" class="vs-duration">
+                {{ formatDuration(item.duration) }}
+              </span>
+            </a>
+
+            <div class="vs-info">
+              <a
+                class="vs-item-title"
+                :href="item.url"
+                target="_blank"
+                rel="noreferrer"
+                :title="item.title"
+                @click.prevent="openItem(item)"
+              >
+                {{ item.title }}
+              </a>
+              <p class="vs-meta">
+                <span v-if="item.author" class="vs-author" :title="item.author">{{ item.author }}</span>
+                <span v-if="formatPlayCount(item.playCount)">{{ formatPlayCount(item.playCount) }}</span>
+              </p>
+              <div class="vs-item-actions">
+                <button type="button" class="vs-play" @click="emit('play', item)">立即播放</button>
+                <button type="button" @click="emit('add', item)">加入列表</button>
+                <button type="button" @click="openItem(item)">打开</button>
+                <button type="button" @click="copyItem(item)">
+                  {{ copiedUrl === item.url ? '已复制' : '复制链接' }}
+                </button>
+              </div>
+            </div>
+          </li>
+        </ol>
+      </section>
+    </div>
+  </section>
+</template>
+
+<style scoped>
+.vs {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.vs-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.vs-title {
+  margin: 0 0 6px;
+  font-size: 17px;
+  letter-spacing: 0.2px;
+}
+
+.vs-sub {
+  margin: 0;
+  max-width: 640px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-dim);
+  user-select: text;
+}
+
+.vs-pill {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.vs-pill.ok {
+  color: var(--ok);
+  border-color: rgba(61, 220, 151, 0.4);
+  background: rgba(61, 220, 151, 0.1);
+}
+
+.vs-pill.warn {
+  color: var(--warn);
+  border-color: rgba(255, 184, 77, 0.4);
+  background: rgba(255, 184, 77, 0.1);
+}
+
+.vs-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.vs-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.vs-field b {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.vs-field input {
+  width: 100%;
+}
+
+.vs-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.vs-query {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  user-select: text;
+}
+
+.vs-query code {
+  color: #cbd2e6;
+}
+
+.vs-query-busy {
+  margin-left: 10px;
+  color: var(--warn);
+}
+
+.vs-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.vs-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 132px;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+}
+
+.vs-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.vs-panel-head h3 {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.vs-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-2);
+}
+
+.vs-dot.youtube {
+  background: #ff4d4d;
+}
+
+.vs-panel-meta {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.vs-state {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-dim);
+  user-select: text;
+}
+
+.vs-state.error {
+  color: #ff9c9c;
+}
+
+.vs-state.error p {
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.vs-state a {
+  color: var(--accent-2);
+  font-size: 12.5px;
+  text-decoration: none;
+}
+
+.vs-state a:hover {
+  text-decoration: underline;
+}
+
+.vs-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.vs-item {
+  display: flex;
+  gap: 11px;
+  padding: 7px;
+  border-radius: 10px;
+  transition: background 0.12s ease;
+}
+
+.vs-item:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.vs-thumb {
+  position: relative;
+  flex: 0 0 108px;
+  height: 61px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #11131a;
+  border: 1px solid var(--border);
+}
+
+.vs-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.vs-thumb-fallback {
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+.vs-duration {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #f4f6fb;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.vs-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.vs-item-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+  text-decoration: none;
+}
+
+.vs-item-title:hover {
+  color: #fff;
+  text-decoration: underline;
+}
+
+.vs-meta {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.vs-author {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vs-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.vs-item-actions button {
+  padding: 4px 9px;
+  font-size: 11.5px;
+  border-radius: 8px;
+}
+
+.vs-item-actions button.vs-play {
+  border-color: rgba(124, 92, 255, 0.5);
+  background: linear-gradient(135deg, rgba(124, 92, 255, 0.85), rgba(79, 125, 255, 0.85));
+  font-weight: 600;
+}
+
+@media (max-width: 1000px) {
+  .vs-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .vs-actions {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 820px) {
+  .vs-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vs-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+</style>

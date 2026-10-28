@@ -82,6 +82,14 @@ internal static class Program
         // 播放器必须能在没有用户手势的情况下自动播放
         settings.CefCommandLineArgs["autoplay-policy"] = "no-user-gesture-required";
 
+        if (!string.IsNullOrWhiteSpace(options.Proxy))
+        {
+            // 显式代理：CEF 和 yt-dlp 用同一个（--proxy）。本机地址必须 bypass，
+            // 否则 app:// 之外还要把 dev server / stream:// 本地文件代理坏掉。
+            settings.CefCommandLineArgs["proxy-server"] = options.Proxy;
+            settings.CefCommandLineArgs["proxy-bypass-list"] = "127.0.0.1;localhost;<local>";
+        }
+
         if (options.Dev)
         {
             // dev 下可以用 chrome://inspect 连这个端口调试页面；
@@ -122,6 +130,19 @@ internal static class Program
                 IsFetchEnabled = true,
             });
         }
+
+        // dev / --url 页面也使用 stream:// 播放解析后的本地音频。
+        // 必须在所有启动模式下、Cef.Initialize 之前注册，否则媒体元素会报错误码 4。
+        settings.RegisterScheme(new CefCustomScheme
+        {
+            SchemeName = "stream",
+            DomainName = "media",
+            SchemeHandlerFactory = new StreamProxySchemeHandlerFactory(),
+            IsStandard = true,
+            IsSecure = true,
+            IsCorsEnabled = true,
+            IsFetchEnabled = true,
+        });
 
         return settings;
     }

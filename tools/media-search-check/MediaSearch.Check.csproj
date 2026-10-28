@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../host/MediaSearch.cs" Link="MediaSearch.cs" />
+    <Compile Include="../../host/Bilibili.cs" Link="Bilibili.cs" />
+    <Compile Include="../../host/Youtube.cs" Link="Youtube.cs" />
+  </ItemGroup>
+</Project>

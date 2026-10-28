@@ -35,6 +35,66 @@ export interface CefHostApi {
   openDevTools(): Promise<void>
   setZoomLevel(level: number): Promise<void>
   openUserDataFolder(): Promise<void>
+  /**
+   * 注册宿主代理的媒体地址：返回 `stream://media/<id>`，可直接当 src 用。
+   * 用来播 http 源（prod 下 secure origin 不能直接加载 http 媒体）或注入请求头。
+   */
+  registerStream(url: string, headersJson: string): Promise<string>
+  /** 解析 B站 地址：返回 JSON 字符串（ok / title / artist / duration / streamUrl / error） */
+  resolveBilibili(url: string): Promise<string>
+  /** 解析 YouTube 地址（yt-dlp + ffmpeg 转 mp3），返回结构同 resolveBilibili */
+  resolveYouTube(url: string): Promise<string>
+  /** 按关键词搜 B站 视频，返回 MediaSearchResult 的 JSON 字符串 */
+  searchBilibili(keyword: string, limit: number): Promise<string>
+  /** 按关键词搜 YouTube 视频（yt-dlp ytsearchN），返回结构同 searchBilibili */
+  searchYouTube(keyword: string, limit: number): Promise<string>
+  /** 用系统默认浏览器打开 http(s) 外链（视频页），避免把 CEF 窗口导航走 */
+  openExternalUrl(url: string): Promise<void>
+}
+
+/** 搜索来源 */
+export type MediaSearchSource = 'bilibili' | 'youtube'
+
+/** 宿主搜索结果里的单条视频 */
+export interface MediaSearchItem {
+  source: MediaSearchSource
+  /** B站 是 BV 号，YouTube 是视频 ID */
+  id: string
+  title: string
+  /** UP 主 / 频道名 */
+  author: string
+  /** 视频页地址（https） */
+  url: string
+  /** 封面地址，可能为空 */
+  thumbnail: string
+  /** 时长，秒；0 表示未知 */
+  duration: number
+  /** 播放量；YouTube 偶尔拿不到，为 0 */
+  playCount: number
+}
+
+/** 一次搜索的结果信封（单个平台） */
+export interface MediaSearchResult {
+  ok: boolean
+  source: MediaSearchSource
+  /** 实际用的关键词（歌名 + 作者 + 专辑） */
+  keyword: string
+  items: MediaSearchItem[]
+  error: string | null
+}
+
+/** B站 解析结果 */
+export interface BilibiliResult {
+  ok: boolean
+  bvid: string | null
+  title: string | null
+  artist: string | null
+  duration: number
+  /** 可直接当 src 用的 stream:// 地址 */
+  streamUrl: string | null
+  /** 是否命中本地缓存（已转码过） */
+  cached: boolean
+  error: string | null
 }
 
 interface CefSharpBridge {
@@ -145,5 +205,118 @@ export const host = {
 
   openUserDataFolder(): Promise<void> {
     return invoke((api) => api.openUserDataFolder(), undefined)
+  },
+
+  /**
+   * 让宿主代理一个媒体地址，返回 `stream://media/<id>`。
+   * 浏览器预览模式没有宿主，直接返回原地址（浏览器里 http 本来就能播）。
+   */
+  registerStream(url: string, headers: Record<string, string> = {}): Promise<string> {
+    const headersJson = JSON.stringify(headers)
+    return invoke((api) => api.registerStream(url, headersJson), url)
+  },
+
+  /**
+   * 让宿主解析 B站 地址（取音频 → ffmpeg 转 mp3 → 缓存），返回可直接播放的 stream:// 地址。
+   * 浏览器预览模式没有宿主，直接返回失败。
+   */
+  async resolveBilibili(url: string): Promise<BilibiliResult> {
+    return this.resolveWith('resolveBilibili', url, '浏览器预览模式没有宿主，无法解析 B站')
+  },
+
+  /** 解析 YouTube（宿主用 yt-dlp 取流 + ffmpeg 转 mp3，再走 stream:// 本地播放） */
+  async resolveYouTube(url: string): Promise<BilibiliResult> {
+    return this.resolveWith('resolveYouTube', url, '浏览器预览模式没有宿主，无法解析 YouTube')
+  },
+
+  /** B站 / YouTube 共用：调宿主 -> 解析 JSON -> 失败时给降级对象 */
+  async resolveWith(
+    method: 'resolveBilibili' | 'resolveYouTube',
+    url: string,
+    fallbackMessage: string,
+  ): Promise<BilibiliResult> {
+    const raw = await invoke<string | null>((api) => api[method](url), null)
+    if (!raw) {
+      return {
+        ok: false,
+        bvid: null,
+        title: null,
+        artist: null,
+        duration: 0,
+        streamUrl: null,
+        cached: false,
+        error: fallbackMessage,
+      }
+    }
+
+    try {
+      return JSON.parse(raw) as BilibiliResult
+    } catch (error) {
+      console.error('[bridge] 解析结果失败', error)
+      return {
+        ok: false,
+        bvid: null,
+        title: null,
+        artist: null,
+        duration: 0,
+        streamUrl: null,
+        cached: false,
+        error: String(error),
+      }
+    }
+  },
+
+  /**
+   * 搜 B站 视频：关键词由调用方把歌名 / 作者 / 专辑拼好。
+   * 浏览器预览模式没有宿主，返回失败结果（UI 会退化成给搜索页链接）。
+   */
+  async searchBilibili(keyword: string, limit = 6): Promise<MediaSearchResult> {
+    return this.searchWith('searchBilibili', 'bilibili', keyword, limit, '浏览器预览模式没有宿主，无法搜索 B站')
+  },
+
+  /** 搜 YouTube 视频（宿主用 yt-dlp 的 ytsearchN，带系统代理） */
+  async searchYouTube(keyword: string, limit = 6): Promise<MediaSearchResult> {
+    return this.searchWith(
+      'searchYouTube',
+      'youtube',
+      keyword,
+      limit,
+      '浏览器预览模式没有宿主，无法搜索 YouTube',
+    )
+  },
+
+  /** 两个平台共用：调宿主 -> 解析 JSON -> 失败时给降级对象 */
+  async searchWith(
+    method: 'searchBilibili' | 'searchYouTube',
+    source: MediaSearchSource,
+    keyword: string,
+    limit: number,
+    fallbackMessage: string,
+  ): Promise<MediaSearchResult> {
+    const empty: MediaSearchResult = { ok: false, source, keyword, items: [], error: fallbackMessage }
+    const raw = await invoke<string | null>((api) => api[method](keyword, limit), null)
+    if (!raw) return empty
+
+    try {
+      const parsed = JSON.parse(raw) as MediaSearchResult
+      return {
+        ...parsed,
+        source,
+        keyword,
+        items: parsed.items ?? [],
+        error: parsed.error ?? null,
+      }
+    } catch (error) {
+      console.error('[bridge] 解析搜索结果失败', error)
+      return { ...empty, error: String(error) }
+    }
+  },
+
+  /** 用系统默认浏览器打开视频页；浏览器预览模式下退化成 window.open */
+  openExternalUrl(url: string): Promise<void> {
+    const bridge = typeof window === 'undefined' ? undefined : window.hostApi
+    if (bridge) return invoke((api) => api.openExternalUrl(url), undefined)
+    if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer')
+    return Promise.resolve()
   },
 }

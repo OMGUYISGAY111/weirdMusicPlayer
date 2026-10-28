@@ -8,9 +8,17 @@ renderer/dist/
 # .NET host build output
 host/bin/
 host/obj/
+tools/media-search-check/bin/
+tools/media-search-check/obj/
+tools/playback-check/bin/
+tools/playback-check/obj/
 dist/
 
 # logs & local cache
 *.log
 .vite/
 cef-cache/
+
+# Local YouTube login credentials
+cookies.txt
+youtube-cookies.txt

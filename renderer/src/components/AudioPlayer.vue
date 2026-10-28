@@ -1,7 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { createMediaElementController } from '@/playback/mediaElementController'
+import type { PlaybackController, PlaybackSnapshot } from '@/playback/types'
 
 interface Props {
+  /** 可注入共享控制器；生命周期由注入方管理。 */
+  controller?: PlaybackController
   /** 音频地址：http(s) / app:// / blob: 都可以 */
   src?: string
   /** 用户本地选中的音频文件，优先级高于 src（内部会 createObjectURL，卸载时释放） */
@@ -37,7 +41,12 @@ const emit = defineEmits<{
   error: [message: string]
 }>()
 
-const audioEl = ref<HTMLAudioElement | null>(null)
+/**
+ * 播放实现被隔离在 controller 里（见 src/playback/）：
+ * 组件只做视图与交互，不直接操作媒体元素，以后接 HLS / YouTube 只需新增一个实现。
+ */
+const controller = props.controller ?? createMediaElementController(props.defaultVolume)
+
 const progressEl = ref<HTMLElement | null>(null)
 
 const playing = ref(false)
@@ -45,31 +54,15 @@ const currentTime = ref(0)
 const duration = ref(0)
 const volume = ref(clamp01(props.defaultVolume))
 const muted = ref(false)
+const loading = ref(false)
+const buffered = ref<Array<[number, number]>>([])
 const dragging = ref(false)
 const dragRatio = ref(0)
 const volumeExpanded = ref(false)
 const errorMessage = ref('')
 
-/** 本地文件 -> 对象 URL，切换文件/卸载时释放，避免内存泄漏 */
-const objectUrl = ref('')
-
-function releaseObjectUrl(): void {
-  if (!objectUrl.value) return
-  URL.revokeObjectURL(objectUrl.value)
-  objectUrl.value = ''
-}
-
-watch(
-  () => props.file,
-  (file) => {
-    releaseObjectUrl()
-    if (file) objectUrl.value = URL.createObjectURL(file)
-  },
-  { immediate: true },
-)
-
-/** file 优先，其次是 src */
-const audioSrc = computed(() => objectUrl.value || props.src)
+/** 有可播的源（本地文件或地址） */
+const hasSource = computed(() => Boolean(props.file) || Boolean(props.src))
 
 const fallbackTitle = computed(() => {
   const fileName = props.file?.name ?? props.src.split('/').pop() ?? ''
@@ -91,6 +84,24 @@ const playedRatio = computed(() => {
 const fillStyle = computed(() => ({ width: `${(playedRatio.value * 100).toFixed(3)}%` }))
 // 圆点圆心就是播放比例位置（和填充线末端对齐）
 const thumbStyle = computed(() => ({ left: `${(playedRatio.value * 100).toFixed(3)}%` }))
+
+/**
+ * 已缓冲区间（只画不参与交互）。控制器没声明 buffered 能力（如 iframe 实现）或
+ * 时长未知时返回空数组，UI 自然退化为「只有一条进度线」。
+ */
+const bufferedSegments = computed(() => {
+  if (!controller.capabilities.buffered || !hasDuration.value) return []
+  return buffered.value
+    .filter(([, end]) => end > 0)
+    .map(([start, end]) => {
+      const from = clamp01(start / duration.value)
+      const to = clamp01(end / duration.value)
+      return {
+        left: `${(from * 100).toFixed(3)}%`,
+        width: `${(Math.max(to - from, 0) * 100).toFixed(3)}%`,
+      }
+    })
+})
 
 // 圆点两侧的时间标签做成一组跟着圆点走：红＝已播放（数字），灰＝总时长（数字）。
 // 半宽用 ResizeObserver 实测，两端按真实宽度夹紧，贴边时不会多缩也不会溢出。
@@ -171,18 +182,14 @@ const volumeTrackStyle = computed(() => {
 })
 
 async function play(): Promise<void> {
-  const el = audioEl.value
-  if (!el || !audioSrc.value) return
-  try {
-    await el.play()
-  } catch (error) {
-    // 自动播放被拦、或解码失败
-    setError(String(error))
-  }
+  if (!hasSource.value) return
+  errorMessage.value = ''
+  await controller.play()
+  applySnapshot()
 }
 
 function pause(): void {
-  audioEl.value?.pause()
+  controller.pause()
 }
 
 function toggle(): void {
@@ -191,31 +198,32 @@ function toggle(): void {
 }
 
 function seekTo(seconds: number): void {
-  const el = audioEl.value
-  if (!el || !hasDuration.value) return
-  el.currentTime = clamp(seconds, 0, duration.value)
-  currentTime.value = el.currentTime
+  if (!hasDuration.value) return
+  const next = clamp(seconds, 0, duration.value)
+  controller.seek(next)
+  currentTime.value = next
 }
 
 function seekByRatio(ratio: number): void {
-  const el = audioEl.value
-  if (!el || !hasDuration.value) return
-  el.currentTime = clamp01(ratio) * duration.value
-  currentTime.value = el.currentTime
+  if (!hasDuration.value) return
+  const seconds = clamp01(ratio) * duration.value
+  controller.seek(seconds)
+  currentTime.value = seconds
 }
 
 function setVolume(next: number): void {
-  volume.value = clamp01(next)
-  muted.value = false
+  controller.setVolume(clamp01(next))
+  applySnapshot()
 }
 
 function toggleMute(): void {
   if (muted.value) {
-    muted.value = false
-    if (volume.value <= 0.001) volume.value = 0.5
+    controller.setMuted(false)
+    if (volume.value <= 0.001) controller.setVolume(0.5)
     return
   }
-  muted.value = true
+  controller.setMuted(true)
+  applySnapshot()
 }
 
 function onVolumeInput(event: Event): void {
@@ -294,71 +302,66 @@ function onProgressKeydown(event: KeyboardEvent): void {
   }
 }
 
-/* ---------- <audio> 事件 ---------- */
+/* ---------- controller -> 视图状态 ---------- */
 
-function onLoadedMetadata(): void {
-  const el = audioEl.value
-  if (!el) return
-  duration.value = Number.isFinite(el.duration) ? el.duration : 0
-  currentTime.value = el.currentTime
-  el.volume = volume.value
-  el.muted = muted.value
+function applySnapshot(): void {
+  const snapshot: PlaybackSnapshot = controller.snapshot()
+  playing.value = snapshot.playing
+  duration.value = snapshot.duration
+  loading.value = snapshot.loading
+  buffered.value = snapshot.buffered
+  volume.value = snapshot.volume
+  muted.value = snapshot.muted
+  errorMessage.value = snapshot.error ?? ''
+  if (!dragging.value) currentTime.value = snapshot.currentTime
+}
+
+function onTimeUpdate(): void {
+  const snapshot = controller.snapshot()
+  if (!dragging.value) currentTime.value = snapshot.currentTime
+  emit('timeupdate', snapshot.currentTime, snapshot.duration)
+}
+
+function onLoaded(): void {
+  applySnapshot()
   emit('loaded', duration.value)
   if (props.autoplay) void play()
 }
 
-function onTimeUpdate(): void {
-  const el = audioEl.value
-  if (!el) return
-  if (!dragging.value) currentTime.value = el.currentTime
-  emit('timeupdate', el.currentTime, duration.value)
-}
-
-function onPlay(): void {
-  playing.value = true
-  emit('play')
-}
-
-function onPause(): void {
-  playing.value = false
-  emit('pause')
-}
-
-function onEnded(): void {
-  playing.value = false
-  currentTime.value = duration.value
-  emit('ended')
-}
-
-function setError(message: string): void {
+function onError(): void {
+  const message = controller.snapshot().error ?? '音频加载失败'
   errorMessage.value = message
   emit('error', message)
 }
 
-function onAudioError(): void {
-  const code = audioEl.value?.error?.code
-  setError(code ? `音频加载失败（错误码 ${code}）` : '音频加载失败')
-}
+const offHandlers: Array<() => void> = [
+  controller.on('statechange', applySnapshot),
+  controller.on('timeupdate', onTimeUpdate),
+  controller.on('loaded', onLoaded),
+  controller.on('play', () => emit('play')),
+  controller.on('pause', () => emit('pause')),
+  controller.on('ended', () => {
+    applySnapshot()
+    emit('ended')
+  }),
+  controller.on('error', onError),
+]
 
 /* ---------- 绑定 / 解绑 ---------- */
 
-watch(volume, (next) => {
-  const el = audioEl.value
-  if (el) el.volume = next
-})
-
-watch(muted, (next) => {
-  const el = audioEl.value
-  if (el) el.muted = next
-})
-
-// 换源时重置播放状态
-watch(audioSrc, () => {
-  currentTime.value = 0
-  duration.value = 0
-  playing.value = false
-  errorMessage.value = ''
-})
+// 换源：重置视图状态并把新源交给 controller（objectURL 的生命周期由 controller 管）
+watch(
+  [() => props.file, () => props.src],
+  () => {
+    if (props.controller) { applySnapshot(); return }
+    currentTime.value = 0
+    duration.value = 0
+    playing.value = false
+    errorMessage.value = ''
+    controller.load({ file: props.file, url: props.src })
+  },
+  { immediate: true },
+)
 
 /** 实测时间标签组宽度，供两端夹紧使用 */
 let timeGroupObserver: ResizeObserver | null = null
@@ -384,18 +387,8 @@ onMounted(() => {
 onBeforeUnmount(() => {
   timeGroupObserver?.disconnect()
   timeGroupObserver = null
-
-  const el = audioEl.value
-  if (el) {
-    el.pause()
-    el.removeAttribute('src')
-    try {
-      el.load()
-    } catch {
-      // 部分环境下卸载时会抛，忽略
-    }
-  }
-  releaseObjectUrl()
+  for (const off of offHandlers) off()
+  if (!props.controller) controller.dispose()
 })
 
 /* ---------- 工具 ---------- */
@@ -416,7 +409,22 @@ function formatTime(seconds: number): string {
   return `${minutes}:${rest.toString().padStart(2, '0')}`
 }
 
-defineExpose({ play, pause, toggle, seekTo, setVolume, toggleMute, audioEl, playing, currentTime, duration, volume, muted })
+defineExpose({
+  play,
+  pause,
+  toggle,
+  seekTo,
+  setVolume,
+  toggleMute,
+  controller,
+  // 只读状态，方便宿主页面观察
+  playing,
+  currentTime,
+  duration,
+  volume,
+  muted,
+  loading,
+})
 </script>
 
 <template>
@@ -446,7 +454,14 @@ defineExpose({ play, pause, toggle, seekTo, setVolume, toggleMute, audioEl, play
       </span>
 
       <div class="mp-progress-track">
+        <div
+          v-for="(segment, index) in bufferedSegments"
+          :key="index"
+          class="mp-progress-buffered"
+          :style="segment"
+        />
         <div class="mp-progress-fill" :style="fillStyle" />
+        <div v-if="loading" class="mp-progress-loading" />
       </div>
       <span class="mp-progress-thumb" :style="thumbStyle" />
     </div>
@@ -476,7 +491,7 @@ defineExpose({ play, pause, toggle, seekTo, setVolume, toggleMute, audioEl, play
         <button
           class="mp-play"
           type="button"
-          :disabled="!audioSrc"
+          :disabled="!hasSource"
           :aria-label="playing ? '暂停' : '播放'"
           :title="playing ? '暂停' : '播放'"
           @click="toggle"
@@ -551,19 +566,6 @@ defineExpose({ play, pause, toggle, seekTo, setVolume, toggleMute, audioEl, play
       </div>
     </div>
 
-    <audio
-      ref="audioEl"
-      :src="audioSrc || undefined"
-      preload="metadata"
-      @loadedmetadata="onLoadedMetadata"
-      @durationchange="onLoadedMetadata"
-      @timeupdate="onTimeUpdate"
-      @play="onPlay"
-      @pause="onPause"
-      @ended="onEnded"
-      @error="onAudioError"
-    />
-
     <p v-if="errorMessage" class="mp-error">{{ errorMessage }}</p>
   </div>
 </template>
@@ -576,6 +578,8 @@ defineExpose({ play, pause, toggle, seekTo, setVolume, toggleMute, audioEl, play
   --mp-dim: #9298a1;
   --mp-accent: #ff4d5e;
   --mp-track: #e9ebef;
+  /* 已缓冲但未播放的那一段颜色 */
+  --mp-buffered: color-mix(in srgb, var(--mp-accent) 32%, var(--mp-track));
 
   /* 进度条几何：--mp-track-h 线粗，--mp-thumb-size 圆点直径，
      --mp-progress-hit 点击/拖拽热区高度（只管手感不影响视觉）；
@@ -690,9 +694,46 @@ defineExpose({ play, pause, toggle, seekTo, setVolume, toggleMute, audioEl, play
 }
 
 .mp-progress-fill {
+  /* 已播放层要盖住绝对定位的缓冲区间，保持圆点左侧为主题红。 */
+  position: relative;
+  z-index: 1;
   height: 100%;
   background: var(--mp-accent);
   border-radius: inherit;
+}
+
+/* 已缓冲但未播放的区间（流式播放时才出现） */
+.mp-progress-buffered {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: var(--mp-buffered);
+}
+
+/* 缓冲中：一条扫过的浅色高光 */
+.mp-progress-loading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.75) 50%,
+    transparent 100%
+  );
+  animation: mp-loading 1.1s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes mp-loading {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
 }
 
 .mp-progress-thumb {
