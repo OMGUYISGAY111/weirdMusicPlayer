@@ -30,6 +30,73 @@ Check(youtube.Count == 1 && youtube[0].Author == "频道", "YouTube缺字段兼�
 Check(youtube[0].Url == "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "YouTube视频链接错误");
 Console.WriteLine("PASS: B站 / YouTube 响应解析和视频链接检查");
 
+using (var ytInfo = JsonDocument.Parse("""
+{"id":"dQw4w9WgXcQ","title":"YouTube 音乐视频","channel":"频道", "uploader":"上传者",
+ "thumbnail":"http://i.ytimg.com/cover.jpg","duration":210,"view_count":123456}
+"""))
+{
+    var info = YoutubeSearch.ParseVideoInfo(ytInfo.RootElement);
+    Check(info.Title == "YouTube 音乐视频" && info.Author == "频道", "YouTube 标题和频道解析失败");
+    Check(info.Thumbnail == "https://i.ytimg.com/cover.jpg" && info.Duration == 210 && info.PlayCount == 123456, "YouTube 视频详细信息解析失败");
+}
+using (var ytMinimal = JsonDocument.Parse("""{"id":"dQw4w9WgXcQ","uploader":"上传者","duration":null,"thumbnails":[{}, {"url":"//i.ytimg.com/cover.jpg"}]}"""))
+{
+    var info = YoutubeSearch.ParseVideoInfo(ytMinimal.RootElement);
+    Check(info.Title == "dQw4w9WgXcQ" && info.Author == "上传者" && info.Duration == 0, "YouTube 缺字段容错失败");
+    Check(info.Thumbnail == "https://i.ytimg.com/cover.jpg", "YouTube 封面数组解析失败");
+}
+var metadataArgs = YoutubeResolver.VideoArguments(null);
+Check(metadataArgs.Contains("--skip-download") && metadataArgs.Contains("--no-playlist")
+    && metadataArgs.Contains("--ignore-no-formats-error") && !metadataArgs.Contains("-f"), "读取信息不能下载视频或要求存在音轨格式");
+Check(YoutubeResolver.VideoArguments(false).Contains(YtDlpRuntime.AudioFormat)
+    && YoutubeResolver.VideoArguments(true).Any(value => value.StartsWith("bestaudio[acodec=opus]")), "播放格式偏好必须保留");
+Console.WriteLine("PASS: YouTube 视频信息、封面、频道及只读参数检查");
+
+if (args.Length > 1 && args[0] == "--info-youtube")
+{
+    using var infoTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+    try
+    {
+        var info = await YoutubeResolver.GetVideoInfoAsync(args[1],
+            Environment.GetEnvironmentVariable("MUSICPLAYER_PROXY") ?? SystemProxy.Detect(), infoTimeout.Token);
+        Console.WriteLine(JsonSerializer.Serialize(info));
+        Check(!string.IsNullOrWhiteSpace(info.Title) && !string.IsNullOrWhiteSpace(info.Thumbnail), "YouTube 真实视频标题或封面缺失");
+    }
+    catch (Exception ex) { Console.WriteLine(ex.Message); Environment.ExitCode = 1; }
+}
+
+using (var videoInfo = JsonDocument.Parse("""
+{"bvid":"BV1GJ411x7h7","title":"视频原始标题 & 音乐","pic":"//i.example/cover.jpg",
+ "owner":{"name":"UP 主"},"duration":123,"stat":{"view":456}}
+"""))
+{
+    var info = BilibiliResolver.ParseVideoInfo(videoInfo.RootElement, "https://www.bilibili.com/video/BV1GJ411x7h7/?p=2");
+    Check(info.Title == "视频原始标题 & 音乐" && info.Author == "UP 主", "视频标题和作者读取失败");
+    Check(info.Thumbnail == "https://i.example/cover.jpg" && info.Duration == 123 && info.PlayCount == 456, "封面、时长和播放量读取失败");
+    Check(info.Url.EndsWith("?p=2"), "视频信息不应丢失原链接参数");
+}
+using (var missingInfo = JsonDocument.Parse("""{"owner":null,"stat":null,"pic":null}"""))
+{
+    var info = BilibiliResolver.ParseVideoInfo(missingInfo.RootElement, "https://www.bilibili.com/video/BV1GJ411x7h7");
+    Check(info.Title == "BV1GJ411x7h7" && info.Thumbnail == "" && info.Author == "", "信息缺失时应保留 BV 号并容错");
+}
+Console.WriteLine("PASS: B站视频信息标题、封面、作者与缺字段容错检查");
+using (var httpCover = JsonDocument.Parse("""{"pic":"http://i.example/cover.jpg"}"""))
+    Check(BilibiliResolver.ParseVideoInfo(httpCover.RootElement, "https://www.bilibili.com/video/BV1GJ411x7h7").Thumbnail
+        == "https://i.example/cover.jpg", "封面应升级为 HTTPS，避免安全页面拦截混合内容");
+
+if (args.Length > 1 && args[0] == "--info-bili")
+{
+    using var infoTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+    try
+    {
+        var info = await BilibiliResolver.GetVideoInfoAsync(args[1], infoTimeout.Token);
+        Console.WriteLine(JsonSerializer.Serialize(info));
+        Check(!string.IsNullOrWhiteSpace(info.Title) && !string.IsNullOrWhiteSpace(info.Thumbnail), "真实视频标题或封面缺失");
+    }
+    catch (Exception ex) { Console.WriteLine(ex.Message); Environment.ExitCode = 1; }
+}
+
 Check(YtDlpAuthentication.BuildArguments(null, null).Count == 0, "未配置时不应读取浏览器 Cookie");
 Check(YtDlpAuthentication.BuildArguments(null, " firefox:default ").SequenceEqual(
     new[] { "--cookies-from-browser", "firefox:default" }), "浏览器配置没有原样传递");

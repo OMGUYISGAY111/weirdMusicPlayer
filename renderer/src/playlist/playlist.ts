@@ -68,6 +68,19 @@ export function createPlaylist(
     return track.id
   }
 
+  function updateMetadata(id: string, metadata: Pick<PlaylistTrack, 'title' | 'artist' | 'cover'>): void {
+    const existing = state.items.find((item) => item.id === id)
+    if (!existing) return
+    const updated = {
+      ...existing,
+      title: metadata.title || existing.title,
+      artist: metadata.artist || existing.artist,
+      cover: metadata.cover || existing.cover,
+    }
+    if (updated.title === existing.title && updated.artist === existing.artist && updated.cover === existing.cover) return
+    patch({ items: state.items.map((item) => item.id === id ? updated : item) })
+  }
+
   async function play(id = state.currentId ?? state.items[0]?.id): Promise<void> {
     const track = state.items.find((item) => item.id === id)
     if (!track) return
@@ -211,7 +224,7 @@ export function createPlaylist(
       listeners.add(listener)
       return () => { listeners.delete(listener) }
     },
-    add, play, pause, resume, next, previous, ended, remove, clear, connect, fail, syncPlaying,
+    add, updateMetadata, play, pause, resume, next, previous, ended, remove, clear, connect, fail, syncPlaying,
     setMode, canNext, canPrevious, syncBuffering,
   }
 }

@@ -53,6 +53,10 @@ export interface CefHostApi {
   resolveYouTube(url: string, supportedTypesJson: string): Promise<string>
   /** 按关键词搜 B站 视频，返回 MediaSearchResult 的 JSON 字符串 */
   searchBilibili(keyword: string, limit: number): Promise<string>
+  /** 只读取 B站视频信息，不解析音轨。 */
+  getBilibiliVideoInfo(url: string): Promise<string>
+  /** 只读取 YouTube 视频信息，不下载媒体。 */
+  getYouTubeVideoInfo(url: string): Promise<string>
   /** 按关键词搜 YouTube 视频（yt-dlp ytsearchN），返回结构同 searchBilibili */
   searchYouTube(keyword: string, limit: number): Promise<string>
   /** 用系统默认浏览器打开 http(s) 外链（视频页），避免把 CEF 窗口导航走 */
@@ -87,6 +91,12 @@ export interface MediaSearchResult {
   /** 实际用的关键词（歌名 + 作者 + 专辑） */
   keyword: string
   items: MediaSearchItem[]
+  error: string | null
+}
+
+export interface VideoInfoResult {
+  ok: boolean
+  item: MediaSearchItem | null
   error: string | null
 }
 
@@ -175,6 +185,22 @@ async function invoke<T>(call: (api: CefHostApi) => Promise<T>, fallback: T): Pr
 }
 
 export const host = {
+  async getBilibiliVideoInfo(url: string): Promise<VideoInfoResult> {
+    return this.videoInfoWith('getBilibiliVideoInfo', 'B站', url)
+  },
+  async getYouTubeVideoInfo(url: string): Promise<VideoInfoResult> {
+    return this.videoInfoWith('getYouTubeVideoInfo', 'YouTube', url)
+  },
+  async videoInfoWith(method: 'getBilibiliVideoInfo' | 'getYouTubeVideoInfo', platform: string, url: string): Promise<VideoInfoResult> {
+    const empty: VideoInfoResult = { ok: false, item: null, error: `未能读取 ${platform} 视频信息，请确认宿主已更新并连接后重试` }
+    const raw = await invoke<string | null>((api) => api[method](url), null)
+    if (!raw) return empty
+    try {
+      return JSON.parse(raw) as VideoInfoResult
+    } catch (error) {
+      return { ...empty, error: String(error) }
+    }
+  },
   /** 读取宿主/内核版本等运行环境信息 */
   async info(): Promise<HostInfo> {
     const raw = await invoke<string | null>((api) => api.getHostInfo(), null)

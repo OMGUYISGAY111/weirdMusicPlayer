@@ -470,7 +470,7 @@ defineExpose({
       <!-- 封面 + 标题/歌手 -->
       <div class="mp-meta">
         <div class="mp-cover">
-          <img v-if="cover" :src="cover" :alt="displayTitle" draggable="false" />
+          <img v-if="cover" :src="cover" :alt="displayTitle" draggable="false" referrerpolicy="no-referrer" />
           <span v-else class="mp-cover-fallback" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="24" height="24">
               <path
@@ -572,12 +572,7 @@ defineExpose({
 
 <style scoped>
 .mp-player {
-  /* 主题变量：整体换成深色只需覆盖这几个值 */
-  --mp-bg: #ffffff;
-  --mp-text: #1a1d21;
-  --mp-dim: #9298a1;
-  --mp-accent: #ff4d5e;
-  --mp-track: #e9ebef;
+  /* 配色继承 styles/main.css 中的共享主题，也可在实例上覆盖。 */
   /* 已缓冲但未播放的那一段颜色 */
   --mp-buffered: color-mix(in srgb, var(--mp-accent) 32%, var(--mp-track));
 

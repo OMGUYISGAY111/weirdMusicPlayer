@@ -234,6 +234,35 @@ internal sealed class HostApi
         return Search("bilibili", keyword, limit);
     }
 
+    /// <summary>读取 B站链接的视频信息，供播放列表保存标题和封面。</summary>
+    public string GetBilibiliVideoInfo(string url)
+    {
+        try
+        {
+            var item = BilibiliResolver.GetVideoInfoAsync(url ?? string.Empty).GetAwaiter().GetResult();
+            return JsonSerializer.Serialize(new { ok = true, item, error = (string?)null }, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(new { ok = false, item = (MediaSearchItem?)null, error = ex.Message }, JsonOptions);
+        }
+    }
+
+    /// <summary>读取 YouTube 标题、封面和频道，复用已有的代理和认证配置。</summary>
+    public string GetYouTubeVideoInfo(string url)
+    {
+        try
+        {
+            var item = YoutubeResolver.GetVideoInfoAsync(url ?? string.Empty,
+                _form.Options.Proxy ?? SystemProxy.Detect()).GetAwaiter().GetResult();
+            return JsonSerializer.Serialize(new { ok = true, item, error = (string?)null }, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(new { ok = false, item = (MediaSearchItem?)null, error = ex.Message }, JsonOptions);
+        }
+    }
+
     /// <summary>
     /// 按关键词搜 YouTube 视频：yt-dlp 的 ytsearchN + -J --flat-playlist，
     /// 返回结构同 SearchBilibili。首次通常 3~10 秒（受网络/代理影响）。

@@ -23,6 +23,7 @@ const emit = defineEmits<{
     <ol v-else>
       <li v-for="(item, index) in items" :key="item.id" :class="{ current: item.id === currentId }">
         <span class="number">{{ index + 1 }}</span>
+        <img v-if="item.cover" class="cover" :src="item.cover" alt="" loading="lazy" referrerpolicy="no-referrer" @error="($event.target as HTMLImageElement).hidden = true" />
         <div class="info">
           <strong>{{ item.title }}</strong>
           <small>{{ item.artist || '未知作者' }} · {{ item.source.kind === 'audio' ? '音频' : item.source.kind === 'bilibili' ? 'B站' : 'YouTube' }}</small>
@@ -46,6 +47,7 @@ ol { list-style: none; padding: 0; margin: 12px 0 0; max-height: 380px; overflow
 li { padding: 10px 6px; border-radius: 8px; }
 li.current { background: rgba(124, 92, 255, .13); }
 .number { width: 22px; text-align: center; }
+.cover { width: 42px; height: 42px; object-fit: cover; border-radius: 6px; flex-shrink: 0; }
 .info { flex: 1; min-width: 0; display: grid; gap: 5px; }
 strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 button { padding: 6px 10px; font-size: 12px; flex-shrink: 0; }

@@ -3,6 +3,19 @@ import assert from 'node:assert/strict'
 import { createPlaylist } from '../src/playlist/playlist.ts'
 
 const track = (id) => ({ id, title: id, source: { kind: 'audio', url: `${id}.mp3` } })
+
+test('补全已有歌曲的信息不复制条目或改变来源，并保留已有的非空信息', () => {
+  const queue = createPlaylist(async () => ({ url: 'audio.mp3' }))
+  queue.add(track('a'))
+  queue.updateMetadata('a', { title: '真实视频标题', artist: 'UP 主', cover: 'https://i.example/cover.jpg' })
+  queue.updateMetadata('a', { title: '', artist: '', cover: '' })
+  const items = queue.snapshot().items
+  assert.equal(items.length, 1)
+  assert.equal(items[0].title, '真实视频标题')
+  assert.equal(items[0].artist, 'UP 主')
+  assert.equal(items[0].cover, 'https://i.example/cover.jpg')
+  assert.deepEqual(items[0].source, track('a').source)
+})
 const deferred = () => {
   let resolve, reject
   const promise = new Promise((yes, no) => { resolve = yes; reject = no })

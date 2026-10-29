@@ -12,11 +12,13 @@ import { trackFromSearch } from '@/playlist/hostAdapter'
 
 const playlist = usePlaylistStore()
 const status = ref('搜索视频后可以加入列表，或立即播放。')
+const searchDockHeight = ref(92)
 
 function onAdd(item: MediaSearchItem): string {
   const track = trackFromSearch(item)
   const exists = playlist.state.items.some((entry) => entry.id === track.id)
   const id = playlist.add(track)
+  if (exists && (track.cover || track.artist)) playlist.updateMetadata(id, track)
   status.value = exists ? `列表中已有：${item.title}` : `已加入列表：${item.title}`
   return id
 }
@@ -27,7 +29,7 @@ async function onPlay(item: MediaSearchItem): Promise<void> {
 </script>
 
 <template>
-  <main class="page">
+  <main class="page" :style="{ paddingTop: `${searchDockHeight + 24}px` }">
     <header class="head">
       <nav class="nav">
         <RouterLink to="/">← 首页</RouterLink>
@@ -35,12 +37,12 @@ async function onPlay(item: MediaSearchItem): Promise<void> {
       </nav>
       <h1>搜视频 · 找链接 · 直接听</h1>
       <p>
-        填歌曲名 / 作者 / 专辑，宿主会同时搜 B站 和 YouTube 并返回视频链接；
+        输入歌曲名 / 歌手 / 专辑，同时搜索 B站 和 YouTube；也可以切换为视频链接模式。
         点「加入列表」收藏到当前播放队列，点「立即播放」加入列表并开始播放，播完自动接下一首。
       </p>
     </header>
 
-    <VideoSearch @play="onPlay" @add="onAdd" />
+    <VideoSearch @play="onPlay" @add="onAdd" @dock-resize="searchDockHeight = $event" />
 
     <p class="hint" role="status">{{ status }}</p>
     <p v-if="playlist.storageError" class="hint" role="status">{{ playlist.storageError }}</p>

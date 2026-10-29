@@ -10,6 +10,34 @@ internal static class YoutubeResolver
     public static async Task<RemoteAudioTrack> ResolveAsync(string input, string? proxy,
         CancellationToken cancellationToken = default, bool preferOpus = true)
     {
+        var data = await ReadVideoDataAsync(input, proxy, preferOpus, cancellationToken);
+        return Parse(data, proxy) with { SourceKind = "youtube", OriginalUrl = input };
+    }
+
+    /// <summary>只读取视频信息，不要求存在可播放音轨，也不下载媒体。</summary>
+    public static async Task<MediaSearchItem> GetVideoInfoAsync(string input, string? proxy,
+        CancellationToken cancellationToken = default)
+    {
+        var data = await ReadVideoDataAsync(input, proxy, null, cancellationToken);
+        return YoutubeSearch.ParseVideoInfo(data) with { Url = input.Trim() };
+    }
+
+    internal static IReadOnlyList<string> VideoArguments(bool? preferOpus)
+    {
+        var arguments = new List<string> { "--ignore-config", "--no-cache-dir", "--no-playlist", "--no-progress",
+            "--skip-download", "--dump-single-json", "--socket-timeout", "20" };
+        if (preferOpus is bool opus)
+        {
+            arguments.Add("-f");
+            arguments.Add(opus ? "bestaudio[acodec=opus][ext=webm][protocol=https]/" + YtDlpRuntime.AudioFormat : YtDlpRuntime.AudioFormat);
+        }
+        else arguments.Add("--ignore-no-formats-error");
+        return arguments;
+    }
+
+    private static async Task<JsonElement> ReadVideoDataAsync(string input, string? proxy, bool? preferOpus,
+        CancellationToken cancellationToken)
+    {
         if (string.IsNullOrWhiteSpace(input)) throw new InvalidOperationException("请填 YouTube 视频地址。");
         var command = YtDlpLocator.Find() ?? throw new InvalidOperationException("找不到 yt-dlp，请安装或配置 MUSICPLAYER_YTDLP。");
         var start = new ProcessStartInfo(command.FileName)
@@ -21,8 +49,7 @@ internal static class YoutubeResolver
         start.Environment["PYTHONUTF8"] = "1";
         start.Environment["PYTHONIOENCODING"] = "utf-8";
         foreach (var argument in command.PrefixArguments) start.ArgumentList.Add(argument);
-        foreach (var argument in new[] { "--ignore-config", "--no-cache-dir", "--no-playlist", "--no-progress", "--skip-download", "--dump-single-json", "--socket-timeout", "20", "-f",
-            preferOpus ? "bestaudio[acodec=opus][ext=webm][protocol=https]/" + YtDlpRuntime.AudioFormat : YtDlpRuntime.AudioFormat })
+        foreach (var argument in VideoArguments(preferOpus))
             start.ArgumentList.Add(argument);
         start.ArgumentList.Add("--proxy"); start.ArgumentList.Add(proxy ?? "");
         YtDlpAuthentication.Apply(start);
@@ -39,7 +66,7 @@ internal static class YoutubeResolver
         var stderr = await errors;
         if (process.ExitCode != 0) throw new InvalidOperationException(YtDlpAuthentication.DescribeFailure(stderr, process.ExitCode));
         using var doc = JsonDocument.Parse(json);
-        return Parse(doc.RootElement, proxy) with { SourceKind = "youtube", OriginalUrl = input };
+        return doc.RootElement.Clone();
     }
 
     internal static RemoteAudioTrack Parse(JsonElement data, string? proxy)

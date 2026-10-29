@@ -1,4 +1,11 @@
 :root {
+  /* 播放器与搜索组件共用的配色。 */
+  --mp-bg: #ffffff;
+  --mp-text: #1a1d21;
+  --mp-dim: #9298a1;
+  --mp-accent: #ff4d5e;
+  --mp-track: #e9ebef;
+
   --bg: #0e0f13;
   --bg-soft: #16181f;
   --panel: #1b1e27;

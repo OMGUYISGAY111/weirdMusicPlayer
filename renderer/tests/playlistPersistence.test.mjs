@@ -18,6 +18,26 @@ function memoryStorage() {
   }
 }
 
+for (const source of ['bilibili', 'youtube']) test(`${source} 已有条目补全标题、作者和封面后保存，重建列表仍保留这些信息`, () => {
+  const storage = memoryStorage()
+  const persistence = createPlaylistPersistence(() => storage)
+  const queue = createPlaylist(resolve)
+  const stop = persistence.connect(queue)
+  const videoId = source === 'bilibili' ? 'BV1GJ411x7h7' : 'dQw4w9WgXcQ'
+  const id = queue.add({
+    id: `${source}:${videoId}`, title: `视频 · ${videoId}`,
+    source: { kind: source, url: source === 'bilibili' ? `https://www.bilibili.com/video/${videoId}` : `https://www.youtube.com/watch?v=${videoId}` },
+  })
+  queue.updateMetadata(id, { title: '真实视频标题', artist: 'UP 主', cover: 'https://i.example/cover.jpg' })
+  const restored = createPlaylist(resolve, { initial: persistence.load() }).snapshot().items
+  assert.equal(restored.length, 1)
+  assert.equal(restored[0].title, '真实视频标题')
+  assert.equal(restored[0].artist, 'UP 主')
+  assert.equal(restored[0].cover, 'https://i.example/cover.jpg')
+  assert.equal(restored[0].source.kind, source)
+  stop()
+})
+
 test('重建列表后恢复顺序、元信息、模式、当前歌曲和历史，恢复时不解析或播放', async () => {
   const storage = memoryStorage()
   const persistence = createPlaylistPersistence(() => storage)

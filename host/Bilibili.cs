@@ -68,8 +68,7 @@ internal static class BilibiliResolver
         return match.Success ? match.Value : null;
     }
 
-    /// <summary>只解析视频信息和音轨，不下载或缓存音频</summary>
-    public static async Task<RemoteAudioTrack> ResolveAsync(string input, CancellationToken cancellationToken = default)
+    private static async Task<JsonElement> GetVideoDataAsync(string input, CancellationToken cancellationToken)
     {
         var bvid = ExtractBvid(input) ?? throw new InvalidOperationException("没找到 BV 号，请粘贴视频地址或 BV 号。");
 
@@ -82,7 +81,38 @@ internal static class BilibiliResolver
             throw new InvalidOperationException($"取视频信息失败：code={viewCode} {viewJson.GetProperty("message").GetString()}");
         }
 
-        var viewData = viewJson.GetProperty("data");
+        return viewJson.GetProperty("data");
+    }
+
+    /// <summary>读取视频标题、封面和作者，不解析音轨或注册播放流。</summary>
+    public static async Task<MediaSearchItem> GetVideoInfoAsync(string input, CancellationToken cancellationToken = default)
+    {
+        var data = await GetVideoDataAsync(input, cancellationToken);
+        return ParseVideoInfo(data, input);
+    }
+
+    internal static MediaSearchItem ParseVideoInfo(JsonElement data, string input)
+    {
+        var bvid = SearchJson.ReadString(data, "bvid");
+        if (string.IsNullOrEmpty(bvid)) bvid = ExtractBvid(input) ?? throw new InvalidOperationException("视频信息缺少 BV 号。");
+        var title = SearchJson.ReadString(data, "title");
+        if (string.IsNullOrWhiteSpace(title)) title = bvid;
+        var artist = data.TryGetProperty("owner", out var owner) && owner.ValueKind == JsonValueKind.Object
+            ? SearchJson.ReadString(owner, "name") : string.Empty;
+        var cover = SearchJson.ReadString(data, "pic");
+        if (cover.StartsWith("//", StringComparison.Ordinal)) cover = "https:" + cover;
+        if (cover.StartsWith("http://", StringComparison.OrdinalIgnoreCase)) cover = "https://" + cover[7..];
+        var playCount = data.TryGetProperty("stat", out var stat) && stat.ValueKind == JsonValueKind.Object
+            ? SearchJson.ReadLong(stat, "view") : 0;
+        return new MediaSearchItem("bilibili", bvid, title, artist, input, cover,
+            SearchJson.ReadDouble(data, "duration"), playCount);
+    }
+
+    /// <summary>只解析视频信息和音轨，不下载或缓存音频</summary>
+    public static async Task<RemoteAudioTrack> ResolveAsync(string input, CancellationToken cancellationToken = default)
+    {
+        var bvid = ExtractBvid(input) ?? throw new InvalidOperationException("没找到 BV 号，请粘贴视频地址或 BV 号。");
+        var viewData = await GetVideoDataAsync(input, cancellationToken);
         var cid = viewData.GetProperty("cid").GetInt64();
         var title = viewData.GetProperty("title").GetString() ?? bvid;
         var artist = viewData.TryGetProperty("owner", out var owner) && owner.TryGetProperty("name", out var ownerName)

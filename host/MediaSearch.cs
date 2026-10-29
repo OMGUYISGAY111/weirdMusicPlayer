@@ -474,36 +474,30 @@ internal static class YoutubeSearch
                 continue;
             }
 
-            var title = SearchJson.ReadString(entry, "title");
-            var author = SearchJson.ReadString(entry, "channel");
-            if (author.Length == 0)
-            {
-                author = SearchJson.ReadString(entry, "uploader");
-            }
-
-            var url = SearchJson.ReadString(entry, "webpage_url");
-            if (url.Length == 0)
-            {
-                url = $"https://www.youtube.com/watch?v={id}";
-            }
-
-            items.Add(new MediaSearchItem(
-                "youtube",
-                id,
-                title.Length > 0 ? title : id,
-                author,
-                url,
-                PickThumbnail(entry, id),
-                SearchJson.ReadDouble(entry, "duration"),
-                SearchJson.ReadLong(entry, "view_count")));
+            items.Add(ParseVideoInfo(entry));
         }
 
         return items;
     }
 
+    internal static MediaSearchItem ParseVideoInfo(JsonElement entry)
+    {
+        var id = SearchJson.ReadString(entry, "id");
+        if (string.IsNullOrWhiteSpace(id)) throw new InvalidOperationException("YouTube 视频信息缺少视频 ID。");
+        var title = SearchJson.ReadString(entry, "title");
+        var author = SearchJson.ReadString(entry, "channel");
+        if (author.Length == 0) author = SearchJson.ReadString(entry, "uploader");
+        var url = SearchJson.ReadString(entry, "webpage_url");
+        if (url.Length == 0) url = $"https://www.youtube.com/watch?v={id}";
+        return new MediaSearchItem("youtube", id, title.Length > 0 ? title : id, author, url,
+            PickThumbnail(entry, id), SearchJson.ReadDouble(entry, "duration"), SearchJson.ReadLong(entry, "view_count"));
+    }
+
     /// <summary>缩略图优先用 yt-dlp 给的，没有就按视频 ID 拼 YouTube 固定的封面地址</summary>
     private static string PickThumbnail(JsonElement entry, string id)
     {
+        var direct = SearchJson.ReadString(entry, "thumbnail");
+        if (direct.Length > 0) return NormalizeThumbnail(direct);
         if (entry.TryGetProperty("thumbnails", out var thumbnails) && thumbnails.ValueKind == JsonValueKind.Array)
         {
             foreach (var thumbnail in thumbnails.EnumerateArray().Reverse())
@@ -513,7 +507,7 @@ internal static class YoutubeSearch
                     var url = SearchJson.ReadString(thumbnail, "url");
                     if (url.Length > 0)
                     {
-                        return url;
+                        return NormalizeThumbnail(url);
                     }
                 }
             }
@@ -521,6 +515,9 @@ internal static class YoutubeSearch
 
         return $"https://i.ytimg.com/vi/{id}/mqdefault.jpg";
     }
+
+    private static string NormalizeThumbnail(string url) => url.StartsWith("//", StringComparison.Ordinal) ? "https:" + url
+        : url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ? "https://" + url[7..] : url;
 
     private static void TryKill(Process process)
     {

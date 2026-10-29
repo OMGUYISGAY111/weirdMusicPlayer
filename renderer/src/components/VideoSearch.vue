@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { searchSongVideos, songKeyword } from '@/search/songVideoSearch'
+import AppHeader from './AppHeader.vue'
+import { resolveVideoLink } from '@/search/videoLink'
 import {
   host,
   hostBridge,
@@ -33,6 +35,7 @@ const emit = defineEmits<{
   /** 用户点了「立即播放」，参数是选中那条视频 */
   play: [item: MediaSearchItem]
   add: [item: MediaSearchItem]
+  dockResize: [height: number]
 }>()
 
 type PanelState = 'idle' | 'loading' | 'done' | 'empty' | 'error'
@@ -53,6 +56,19 @@ function createPanel(key: MediaSearchSource, label: string, hint: string): Panel
 const song = defineModel<string>('song', { default: '' })
 const artist = defineModel<string>('artist', { default: '' })
 const album = defineModel<string>('album', { default: '' })
+const mode = ref<'song' | 'link'>('song')
+const videoUrl = ref('')
+const linkItem = ref<MediaSearchItem | null>(null)
+const linkError = ref('')
+const linkLoading = ref(false)
+let linkSequence = 0
+watch(videoUrl, () => {
+  linkSequence += 1
+  linkLoading.value = false
+  linkItem.value = null
+  linkError.value = ''
+}, { flush: 'sync' })
+watch(mode, () => { linkSequence += 1; linkLoading.value = false })
 
 // reactive 对象本身是代理，模板里直接读属性就能跟踪
 const bili = reactive<Panel>(createPanel('bilibili', '哔哩哔哩', 'bilibili.com'))
@@ -67,8 +83,8 @@ const keyword = computed(() =>
   songKeyword({ song: song.value, artist: artist.value, album: album.value }),
 )
 
-const searching = computed(() => panels.some((panel) => panel.state === 'loading'))
-const canSearch = computed(() => song.value.trim().length > 0 && !searching.value)
+const searching = computed(() => linkLoading.value || panels.some((panel) => panel.state === 'loading'))
+const canSearch = computed(() => (mode.value === 'song' ? song.value.trim() : videoUrl.value.trim()).length > 0 && !searching.value)
 const inHost = computed(() => hostBridge.ready)
 
 /** 宿主不可用（浏览器预览）或某平台报错时，给一个能直接点的网页版搜索 */
@@ -95,6 +111,25 @@ function applyResult(panel: Panel, result: MediaSearchResult): void {
 async function search(): Promise<void> {
   if (!canSearch.value) return
 
+  if (mode.value === 'link') {
+    const seq = ++linkSequence
+    linkError.value = ''
+    linkItem.value = null
+    linkLoading.value = true
+    try {
+      const item = await resolveVideoLink(videoUrl.value, {
+        bilibili: (url) => host.getBilibiliVideoInfo(url),
+        youtube: (url) => host.getYouTubeVideoInfo(url),
+      })
+      if (seq === linkSequence) linkItem.value = item
+    } catch (error) {
+      if (seq === linkSequence) linkError.value = error instanceof Error ? error.message : String(error)
+    } finally {
+      if (seq === linkSequence) linkLoading.value = false
+    }
+    return
+  }
+
   const seq = ++requestSeq.value
   copiedUrl.value = ''
   for (const panel of panels) {
@@ -118,7 +153,7 @@ async function search(): Promise<void> {
   )
 }
 
-onBeforeUnmount(() => { requestSeq.value += 1 })
+onBeforeUnmount(() => { requestSeq.value += 1; linkSequence += 1 })
 defineExpose({ search, clear })
 
 function clear(): void {
@@ -126,6 +161,9 @@ function clear(): void {
   song.value = ''
   artist.value = ''
   album.value = ''
+  videoUrl.value = ''
+  linkItem.value = null
+  linkError.value = ''
   copiedUrl.value = ''
   for (const panel of panels) {
     panel.state = 'idle'
@@ -207,9 +245,9 @@ function panelFallback(panel: Panel): string {
   <section class="vs">
     <header class="vs-head">
       <div>
-        <h2 class="vs-title">按歌曲信息找视频</h2>
+        <h2 class="vs-title">搜索音乐</h2>
         <p class="vs-sub">
-          填歌名（必填），作者、专辑可选；关键词 = 各字段用空格拼接，同时搜 B站 和 YouTube。
+          输入歌曲信息搜索视频，或切换模式粘贴 B站 / YouTube 视频链接。
         </p>
       </div>
       <span class="vs-pill" :class="inHost ? 'ok' : 'warn'">
@@ -217,33 +255,40 @@ function panelFallback(panel: Panel): string {
       </span>
     </header>
 
-    <form class="vs-form" @submit.prevent="search">
-      <label class="vs-field">
-        <span>歌曲名 <b>*</b></span>
-        <input v-model="song" placeholder="例：晴天" autocomplete="off" required />
-      </label>
-      <label class="vs-field">
-        <span>作者 / 歌手</span>
-        <input v-model="artist" placeholder="例：周杰伦" autocomplete="off" />
-      </label>
-      <label class="vs-field">
-        <span>专辑</span>
-        <input v-model="album" placeholder="例：叶惠美" autocomplete="off" />
-      </label>
-      <div class="vs-actions">
-        <button class="primary" type="submit" :disabled="!canSearch">
-          {{ searching ? '搜索中…' : '搜索' }}
-        </button>
-        <button type="button" @click="clear">清空</button>
-      </div>
-    </form>
+    <AppHeader v-model:song="song" v-model:artist="artist" v-model:album="album"
+      v-model:url="videoUrl" v-model:mode="mode" :busy="searching" :can-submit="canSearch"
+      @submit="search" @dock-resize="emit('dockResize', $event)" />
 
-    <p class="vs-query">
+    <template v-if="mode === 'link'">
+      <p v-if="linkLoading" class="vs-state" role="status">正在读取视频标题、封面和作者…</p>
+      <p v-else-if="linkError" class="vs-state error" role="alert">{{ linkError }}</p>
+      <section v-else-if="linkItem" class="vs-panel" aria-live="polite">
+        <div class="vs-link-summary">
+          <img v-if="linkItem.thumbnail" class="vs-link-cover" :src="linkItem.thumbnail" alt="视频封面" referrerpolicy="no-referrer" @error="hideBrokenImage" />
+          <div class="vs-info">
+            <h3 class="vs-title">{{ linkItem.title }}</h3>
+            <p class="vs-meta">
+              <span v-if="linkItem.author">{{ linkItem.author }}</span>
+              <span v-if="formatDuration(linkItem.duration)">{{ formatDuration(linkItem.duration) }}</span>
+            </p>
+          </div>
+        </div>
+        <p class="vs-state">{{ linkItem.url }}</p>
+        <div class="vs-item-actions">
+          <button type="button" class="vs-play" @click="emit('play', linkItem)">立即播放</button>
+          <button type="button" @click="emit('add', linkItem)">加入列表</button>
+          <button type="button" @click="openItem(linkItem)">打开</button>
+        </div>
+      </section>
+      <p v-else class="vs-state">粘贴完整视频链接，按 Enter 或点击搜索图标，然后播放或加入列表。</p>
+    </template>
+
+    <p v-if="mode === 'song'" class="vs-query">
       关键词：<code>{{ keyword || '（还没填）' }}</code>
       <span v-if="searching" class="vs-query-busy">搜索中，YouTube 首次通常要 3~10 秒…</span>
     </p>
 
-    <div class="vs-grid">
+    <div v-if="mode === 'song'" class="vs-grid">
       <section v-for="panel in panels" :key="panel.key" class="vs-panel" aria-live="polite" :aria-busy="panel.state === 'loading'">
         <header class="vs-panel-head">
           <h3>
@@ -275,7 +320,7 @@ function panelFallback(panel: Panel): string {
           没搜到结果。试试只填歌名，或者换个写法。
         </p>
 
-        <p v-else-if="panel.state === 'idle'" class="vs-state">填好上面三项后点「搜索」。</p>
+        <p v-else-if="panel.state === 'idle'" class="vs-state">输入歌名，歌手和专辑可选，按 Enter 或点击搜索图标。</p>
 
         <ol v-else class="vs-list">
           <li v-for="item in panel.items" :key="item.id" class="vs-item">
@@ -339,6 +384,9 @@ function panelFallback(panel: Panel): string {
   gap: 12px;
 }
 
+.vs-link-summary { display: flex; align-items: flex-start; gap: 14px; }
+.vs-link-cover { width: 144px; max-width: 35%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; }
+
 .vs-head {
   display: flex;
   align-items: flex-start;
@@ -380,36 +428,6 @@ function panelFallback(panel: Panel): string {
   color: var(--warn);
   border-color: rgba(255, 184, 77, 0.4);
   background: rgba(255, 184, 77, 0.1);
-}
-
-.vs-form {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
-  gap: 10px;
-  align-items: end;
-}
-
-.vs-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-  font-size: 12px;
-  color: var(--text-dim);
-}
-
-.vs-field b {
-  color: var(--warn);
-  font-weight: 600;
-}
-
-.vs-field input {
-  width: 100%;
-}
-
-.vs-actions {
-  display: flex;
-  gap: 8px;
 }
 
 .vs-query {
@@ -620,23 +638,10 @@ function panelFallback(panel: Panel): string {
   font-weight: 600;
 }
 
-@media (max-width: 1000px) {
-  .vs-form {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .vs-actions {
-    grid-column: 1 / -1;
-  }
-}
-
 @media (max-width: 820px) {
   .vs-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .vs-form {
-    grid-template-columns: minmax(0, 1fr);
-  }
 }
 </style>
