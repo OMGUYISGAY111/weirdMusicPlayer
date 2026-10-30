@@ -17,7 +17,10 @@ const canNext = computed(() => playlist.state.items.length > 0 && playlist.canNe
 const canPrevious = computed(() => playlist.state.currentId !== null && playlist.canPrevious())
 const statusText = computed(() => {
   const status = playlist.state.status
-  if (status === 'error') return playlist.state.error
+  if (status === 'error') {
+    const wait = playlist.state.autoRetryIn
+    return wait > 0 ? `${playlist.state.error}（${wait} 秒后自动重试）` : playlist.state.error
+  }
   if (status === 'paused' && !playlist.state.source) return '已恢复列表，点击播放'
   return { idle: '选择歌曲开始播放', resolving: '正在解析音频…', loading: '正在加载音频…', buffering: '缓冲中，网络恢复后继续播放…', playing: '正在播放', paused: '已暂停', ended: '列表播放完毕' }[status]
 })

@@ -37,7 +37,12 @@ export interface PlaylistState {
   mode: PlaybackMode
   /** 最近播放记录，随机播放时用于返回上一首。 */
   history: readonly string[]
+  /** 排队中的自动重试倒计时（秒）；0 表示没有自动重试。 */
+  autoRetryIn: number
 }
+
+/** 自动重试的等待秒数：5s、10s、20s，用完就需要用户手动重试。 */
+const AUTO_RETRY_DELAYS = [5, 10, 20] as const
 
 /** 无 Vue、宿主或组件依赖。解析器和播放端均由调用方注入。 */
 export function createPlaylist(
@@ -52,12 +57,17 @@ export function createPlaylist(
     error: '', source: null,
     mode: initial?.mode ?? 'sequential',
     history: initial ? [...initial.history] : [],
+    autoRetryIn: 0,
   }
   const random = options.random ?? Math.random
   let player: PlaylistPlayer | null = null
   let generation = 0
   /** 出错时的播放进度；重试同一首时从这里继续（切歌/正常播放/播完后清空）。 */
   let retryAt = 0
+  let autoRetryTimer: ReturnType<typeof setInterval> | undefined
+  let autoRetryAttempt = 0
+  /** 正在由自动重试触发 play()，此时不能把手动重试的计数清零。 */
+  let autoRetrying = false
   const listeners = new Set<(state: PlaylistState) => void>()
   const patch = (changes: Partial<PlaylistState>) => {
     state = { ...state, ...changes }
@@ -65,6 +75,46 @@ export function createPlaylist(
   }
   const index = () => state.items.findIndex((item) => item.id === state.currentId)
   const hasError = () => state.status === 'error'
+
+  /** 取消排队中的自动重试；reset 为真时同时清零重试次数（用户手动操作或播放成功）。 */
+  function stopAutoRetry(reset = true): void {
+    if (autoRetryTimer !== undefined) {
+      clearInterval(autoRetryTimer)
+      autoRetryTimer = undefined
+    }
+    if (state.autoRetryIn !== 0) patch({ autoRetryIn: 0 })
+    if (reset) autoRetryAttempt = 0
+  }
+
+  /** 出错后按 5/10/20 秒自动重试同一首（play() 会 seek 回 retryAt）；用完后保留错误等用户手动重试。 */
+  function scheduleAutoRetry(message: string): void {
+    if (autoRetryTimer !== undefined) {
+      clearInterval(autoRetryTimer)
+      autoRetryTimer = undefined
+    }
+    const delay = AUTO_RETRY_DELAYS[autoRetryAttempt]
+    if (delay === undefined) {
+      patch({ status: 'error', error: message, autoRetryIn: 0 })
+      return
+    }
+    autoRetryAttempt += 1
+    let left = delay
+    patch({ status: 'error', error: message, autoRetryIn: left })
+    autoRetryTimer = setInterval(() => {
+      left -= 1
+      if (left > 0) {
+        patch({ autoRetryIn: left })
+        return
+      }
+      if (autoRetryTimer !== undefined) {
+        clearInterval(autoRetryTimer)
+        autoRetryTimer = undefined
+      }
+      patch({ autoRetryIn: 0 })
+      autoRetrying = true
+      void play().finally(() => { autoRetrying = false })
+    }, 1000)
+  }
 
   function add(track: PlaylistTrack): string {
     if (!state.items.some((item) => item.id === track.id)) {
@@ -89,6 +139,8 @@ export function createPlaylist(
   async function play(id = state.currentId ?? state.items[0]?.id): Promise<void> {
     const track = state.items.find((item) => item.id === id)
     if (!track) return
+    // 用户主动播放：取消自动重试并重新计数；自动重试触发的 play 保留计数。
+    if (!autoRetrying) stopAutoRetry(true)
     // 同一首在出错后重试：回到失败时的进度，而不是从 0 开始。
     // 进度存在 retryAt 里，这样即使重试时解析也失败（比如 60s 超时），下一次重试仍能接上。
     const retry = track.id === state.currentId && state.status === 'error'
@@ -115,13 +167,19 @@ export function createPlaylist(
       if (token === generation && !hasError() && !['buffering', 'paused'].includes(state.status)) {
         patch({ status: 'playing' })
         retryAt = 0
+        stopAutoRetry(true)
       }
     } catch (error) {
-      if (token === generation) patch({ status: 'error', error: error instanceof Error ? error.message : String(error) })
+      if (token !== generation) return
+      const message = error instanceof Error ? error.message : String(error)
+      // 播放器都没连上时自动重试没有意义，直接把错误留给界面。
+      if (target) scheduleAutoRetry(message)
+      else patch({ status: 'error', error: message, autoRetryIn: 0 })
     }
   }
 
   function pause(): void {
+    stopAutoRetry(true)
     ++generation
     player?.pause()
     patch({ status: state.currentId ? 'paused' : 'idle' })
@@ -184,6 +242,7 @@ export function createPlaylist(
     // 播放端只通知结束；是否重播、随机切歌或停止完全由列表模式决定。
     const id = state.mode === 'repeat-one' ? state.currentId : nextId()
     retryAt = 0
+    stopAutoRetry(true)
     patch({ status: 'ended' })
     if (id) await play(id)
   }
@@ -197,6 +256,7 @@ export function createPlaylist(
     if (!isCurrent) { patch({ items, history }); return }
     ++generation
     retryAt = 0
+    stopAutoRetry(true)
     player?.pause()
     player?.load({})
     patch({ items, history, currentId: null, source: null, status: 'idle', error: '' })
@@ -207,9 +267,16 @@ export function createPlaylist(
   function clear(): void {
     ++generation
     retryAt = 0
+    stopAutoRetry(true)
     player?.pause()
     player?.load({})
     patch({ items: [], history: [], currentId: null, source: null, status: 'idle', error: '' })
+  }
+
+  /** 停掉自动重试定时器并清空订阅（应用关闭/组件卸载时调用）。 */
+  function dispose(): void {
+    stopAutoRetry(true)
+    listeners.clear()
   }
 
   function connect(target: PlaylistPlayer): () => void {
@@ -226,7 +293,8 @@ export function createPlaylist(
     if (!state.source) return
     // 断流时记下进度；即使之后重试的解析也失败，再次重试仍回到这里。
     retryAt = Math.max(retryAt, player?.position?.() ?? 0)
-    patch({ status: 'error', error })
+    // 先自动重试（5/10/20 秒），成功后从 retryAt 续播；用完后保留错误等用户手动重试。
+    scheduleAutoRetry(error)
   }
 
   function syncPlaying(playing: boolean): void {
@@ -247,7 +315,7 @@ export function createPlaylist(
       listeners.add(listener)
       return () => { listeners.delete(listener) }
     },
-    add, updateMetadata, play, pause, resume, next, previous, ended, remove, clear, connect, fail, syncPlaying,
+    add, updateMetadata, play, pause, resume, next, previous, ended, remove, clear, dispose, connect, fail, syncPlaying,
     setMode, canNext, canPrevious, syncBuffering,
   }
 }

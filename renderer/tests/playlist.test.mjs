@@ -1,6 +1,15 @@
-import test from 'node:test'
+import test, { afterEach, mock } from 'node:test'
 import assert from 'node:assert/strict'
-import { createPlaylist } from '../src/playlist/playlist.ts'
+import { createPlaylist as createPlaylistCore } from '../src/playlist/playlist.ts'
+
+// 每个用例创建的队列都要在结束时 dispose，避免自动重试的定时器把测试进程挂住。
+const created = []
+function createPlaylist(resolve, options) {
+  const queue = createPlaylistCore(resolve, options)
+  created.push(queue)
+  return queue
+}
+afterEach(() => { for (const queue of created.splice(0)) queue.dispose() })
 
 const track = (id) => ({ id, title: id, source: { kind: 'audio', url: `${id}.mp3` } })
 
@@ -337,4 +346,87 @@ test('重试时解析也失败（例如 60s 超时），下一次重试仍回到
   await queue.play()
   assert.deepEqual(seeks, [87])
   assert.equal(queue.snapshot().status, 'playing')
+})
+
+test('断流后 5 秒自动重试并回到进度，成功后不再重试', async () => {
+  mock.timers.enable({ apis: ['setInterval'] })
+  try {
+    const queue = createPlaylist(async () => ({ url: 'a.mp3' }))
+    const seeks = []
+    let time = 0
+    queue.connect({
+      load: () => { time = 0 },
+      play: async () => {},
+      pause: () => {},
+      position: () => time,
+      seek: (seconds) => { time = seconds; seeks.push(seconds) },
+    })
+    queue.add(track('a'))
+    await queue.play()
+    time = 64
+    queue.fail('流断了')
+    assert.equal(queue.snapshot().status, 'error')
+    assert.equal(queue.snapshot().autoRetryIn, 5)
+    mock.timers.tick(4000)
+    assert.equal(queue.snapshot().autoRetryIn, 1)
+    mock.timers.tick(1000)
+    await flush()
+    assert.deepEqual(seeks, [64])
+    assert.equal(queue.snapshot().status, 'playing')
+    assert.equal(queue.snapshot().autoRetryIn, 0)
+    mock.timers.tick(60000)
+    await flush()
+    assert.deepEqual(seeks, [64])
+  } finally {
+    mock.timers.reset()
+  }
+})
+
+test('自动重试按 5/10/20 秒退避，三次都失败后停下等手动重试', async () => {
+  mock.timers.enable({ apis: ['setInterval'] })
+  try {
+    let resolves = 0
+    const queue = createPlaylist(async () => {
+      resolves += 1
+      throw new Error('解析失败')
+    })
+    queue.connect({ load() {}, play: async () => {}, pause() {} })
+    queue.add(track('a'))
+    await queue.play()
+    assert.equal(queue.snapshot().autoRetryIn, 5)
+    mock.timers.tick(5000)
+    await flush()
+    assert.equal(queue.snapshot().autoRetryIn, 10)
+    mock.timers.tick(10000)
+    await flush()
+    assert.equal(queue.snapshot().autoRetryIn, 20)
+    mock.timers.tick(20000)
+    await flush()
+    assert.equal(queue.snapshot().autoRetryIn, 0)
+    assert.equal(queue.snapshot().status, 'error')
+    assert.equal(resolves, 4)
+    await queue.play()
+    assert.equal(queue.snapshot().autoRetryIn, 5)
+  } finally {
+    mock.timers.reset()
+  }
+})
+
+test('暂停会取消排队中的自动重试', async () => {
+  mock.timers.enable({ apis: ['setInterval'] })
+  try {
+    const queue = createPlaylist(async () => ({ url: 'a.mp3' }))
+    queue.connect({ load() {}, play: async () => {}, pause() {} })
+    queue.add(track('a'))
+    await queue.play()
+    queue.fail('流断了')
+    assert.equal(queue.snapshot().autoRetryIn, 5)
+    queue.pause()
+    assert.equal(queue.snapshot().autoRetryIn, 0)
+    mock.timers.tick(10000)
+    await flush()
+    assert.equal(queue.snapshot().status, 'paused')
+  } finally {
+    mock.timers.reset()
+  }
 })

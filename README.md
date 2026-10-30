@@ -302,7 +302,7 @@ dotnet run --project tools/playback-check -c Release -- url D:/MusicPlayerData/b
   不支持的编码 → FFmpeg 内存管道实时转码 → 可按需 seek 的虚拟 WAV → 播放器
 ```
 
-B站优先 AAC-LC 192K，当前 CEF 不支持时按需转码；YouTube 优先 WebM/Opus 直接流播放。视频解析器不写入音频文件，旧缓存保留但不再用于这条播放链路。播放列表仅保存原始页面地址，切歌和重试时重新解析临时流；**出错后重试同一首会回到失败时的进度，正常切歌仍从 0 开始**（`PlaylistPlayer.position/seek`，自动恢复 `stream://` 时则由 `streamRecovery` 负责 seek 回原位置）。
+B站优先 AAC-LC 192K，当前 CEF 不支持时按需转码；YouTube 优先 WebM/Opus 直接流播放。视频解析器不写入音频文件，旧缓存保留但不再用于这条播放链路。播放列表仅保存原始页面地址，切歌和重试时重新解析临时流；**出错后会自动按 5s / 10s / 20s 重试并回到失败时的进度，三次都失败才需要手动点「重试」**；正常切歌仍从 0 开始（`PlaylistPlayer.position/seek`，自动恢复 `stream://` 时则由 `streamRecovery` 负责 seek 回原位置）。
 
 完整说明、限制和真实 CEF 验证命令见 [流式播放说明](docs/streaming-playback.md)。
 

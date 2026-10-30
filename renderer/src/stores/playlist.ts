@@ -11,6 +11,7 @@ export const usePlaylistStore = defineStore('playlist', () => {
   const state = shallowRef(queue.snapshot())
   onScopeDispose(queue.subscribe((value) => { state.value = value }))
   onScopeDispose(persistence.connect(queue))
+  onScopeDispose(() => queue.dispose())
   const currentTrack = computed(() => state.value.items.find((item) => item.id === state.value.currentId))
   return { state, currentTrack, storageError, ...queue }
 })
