@@ -12,6 +12,8 @@ tools/media-search-check/bin/
 tools/media-search-check/obj/
 tools/playback-check/bin/
 tools/playback-check/obj/
+tools/log-check/bin/
+tools/log-check/obj/
 dist/
 
 # logs & local cache

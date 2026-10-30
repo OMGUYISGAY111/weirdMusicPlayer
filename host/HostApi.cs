@@ -127,9 +127,18 @@ internal sealed class HostApi
                 || error.Message.Contains("Unable to download", StringComparison.OrdinalIgnoreCase)
                 || error.Message.Contains("Connection", StringComparison.OrdinalIgnoreCase);
             PlaybackLog.Exception("resolver", "recovery_failed", error, new { source = url, recoverable });
-            return JsonSerializer.Serialize(new { error = error.Message, recoverable }, JsonOptions);
+            return JsonSerializer.Serialize(new { error = ResolveMessage(error), recoverable }, JsonOptions);
         }
     }
+
+    /// <summary>把解析异常转成界面上能看懂的一句话；完整异常仍然写进日志。</summary>
+    private static string ResolveMessage(Exception error) => error switch
+    {
+        TaskCanceledException => "解析超时，请检查网络后重试",
+        OperationCanceledException => "解析已取消，请重试",
+        HttpRequestException => "网络请求失败，请检查网络后重试",
+        _ => error.Message,
+    };
 
     /// <summary>
     /// 解析 B站 音轨，按实际解码能力选择直接代理或实时转码；不下载音频文件。
@@ -172,7 +181,7 @@ internal sealed class HostApi
                 duration = 0d,
                 streamUrl = (string?)null,
                 cached = false,
-                error = ex.Message,
+                error = ResolveMessage(ex),
             }, JsonOptions);
         }
     }
@@ -219,7 +228,7 @@ internal sealed class HostApi
                 duration = 0d,
                 streamUrl = (string?)null,
                 cached = false,
-                error = ex.Message,
+                error = ResolveMessage(ex),
             }, JsonOptions);
         }
     }

@@ -54,7 +54,7 @@ internal static class PlaybackLog
             var data = JsonSerializer.SerializeToElement(details);
             var line = JsonSerializer.Serialize(new
             {
-                time = DateTimeOffset.UtcNow.ToString("O"), session = Session, pid = Environment.ProcessId,
+                time = DateTimeOffset.Now.ToString("O"), session = Session, pid = Environment.ProcessId,
                 level = level is "warn" or "error" ? level : "info",
                 component = Name(component), @event = Name(eventName), data = Clean(data, 0),
             }, JsonOptions);

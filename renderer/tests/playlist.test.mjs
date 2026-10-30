@@ -311,3 +311,30 @@ test('解析失败（还没加载过音源）时重试不跳转进度', async ()
   assert.deepEqual(seeks, [])
   assert.equal(queue.snapshot().status, 'playing')
 })
+
+test('重试时解析也失败（例如 60s 超时），下一次重试仍回到原来的进度', async () => {
+  let resolves = 0
+  const queue = createPlaylist(async () => {
+    if (++resolves === 2) throw new Error('解析超时')
+    return { url: 'a.mp3' }
+  })
+  const seeks = []
+  let time = 0
+  queue.connect({
+    load: () => { time = 0 },
+    play: async () => {},
+    pause: () => {},
+    position: () => time,
+    seek: (seconds) => { time = seconds; seeks.push(seconds) },
+  })
+  queue.add(track('a'))
+  await queue.play()
+  time = 87
+  queue.fail('流断了')
+  await queue.play()
+  assert.equal(queue.snapshot().status, 'error')
+  assert.deepEqual(seeks, [])
+  await queue.play()
+  assert.deepEqual(seeks, [87])
+  assert.equal(queue.snapshot().status, 'playing')
+})

@@ -56,6 +56,8 @@ export function createPlaylist(
   const random = options.random ?? Math.random
   let player: PlaylistPlayer | null = null
   let generation = 0
+  /** 出错时的播放进度；重试同一首时从这里继续（切歌/正常播放/播完后清空）。 */
+  let retryAt = 0
   const listeners = new Set<(state: PlaylistState) => void>()
   const patch = (changes: Partial<PlaylistState>) => {
     state = { ...state, ...changes }
@@ -87,9 +89,11 @@ export function createPlaylist(
   async function play(id = state.currentId ?? state.items[0]?.id): Promise<void> {
     const track = state.items.find((item) => item.id === id)
     if (!track) return
-    // 同一首在出错后重试：记住失败时的进度，加载成功后跳回去，而不是从 0 开始。
-    const retry = track.id === state.currentId && state.status === 'error' && state.source !== null
-    const resumeAt = retry ? Math.max(0, player?.position?.() ?? 0) : 0
+    // 同一首在出错后重试：回到失败时的进度，而不是从 0 开始。
+    // 进度存在 retryAt 里，这样即使重试时解析也失败（比如 60s 超时），下一次重试仍能接上。
+    const retry = track.id === state.currentId && state.status === 'error'
+    if (!retry) retryAt = 0
+    const resumeAt = retry ? retryAt : 0
     const token = ++generation
     const target = player
     target?.pause()
@@ -108,7 +112,10 @@ export function createPlaylist(
         // 有的流会丢掉加载前设置的起播位置，播起来后校正一次。
         if (Math.abs((target.position?.() ?? 0) - resumeAt) > 1) target.seek?.(resumeAt)
       }
-      if (token === generation && !hasError() && !['buffering', 'paused'].includes(state.status)) patch({ status: 'playing' })
+      if (token === generation && !hasError() && !['buffering', 'paused'].includes(state.status)) {
+        patch({ status: 'playing' })
+        retryAt = 0
+      }
     } catch (error) {
       if (token === generation) patch({ status: 'error', error: error instanceof Error ? error.message : String(error) })
     }
@@ -176,6 +183,7 @@ export function createPlaylist(
     if (state.status !== 'playing' && state.status !== 'loading') return
     // 播放端只通知结束；是否重播、随机切歌或停止完全由列表模式决定。
     const id = state.mode === 'repeat-one' ? state.currentId : nextId()
+    retryAt = 0
     patch({ status: 'ended' })
     if (id) await play(id)
   }
@@ -188,6 +196,7 @@ export function createPlaylist(
     const history = state.history.filter((entry) => entry !== id)
     if (!isCurrent) { patch({ items, history }); return }
     ++generation
+    retryAt = 0
     player?.pause()
     player?.load({})
     patch({ items, history, currentId: null, source: null, status: 'idle', error: '' })
@@ -197,6 +206,7 @@ export function createPlaylist(
 
   function clear(): void {
     ++generation
+    retryAt = 0
     player?.pause()
     player?.load({})
     patch({ items: [], history: [], currentId: null, source: null, status: 'idle', error: '' })
@@ -214,6 +224,8 @@ export function createPlaylist(
 
   function fail(error: string): void {
     if (!state.source) return
+    // 断流时记下进度；即使之后重试的解析也失败，再次重试仍回到这里。
+    retryAt = Math.max(retryAt, player?.position?.() ?? 0)
     patch({ status: 'error', error })
   }
 
