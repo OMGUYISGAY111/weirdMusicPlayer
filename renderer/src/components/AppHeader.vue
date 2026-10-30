@@ -58,7 +58,8 @@ onBeforeUnmount(() => observer?.disconnect())
   display: flow-root;
   padding: 12px 28px 0;
   max-height: 100dvh;
-  overflow-y: auto;
+  /* 搜索栏展开的「选模式」面板会溢出到 header 下方，这里不能裁剪。 */
+  overflow: visible;
   background: var(--mp-bg);
 }
 
