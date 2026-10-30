@@ -18,6 +18,13 @@ const detailsId = useId()
 const searchForm = ref<HTMLFormElement | null>(null)
 const mainInput = ref<HTMLInputElement | null>(null)
 const showControls = ref(false)
+/** 卡片打开时点外面只关卡片：这次失焦不再把搜索栏一起收起，红点留在原位。 */
+let keepControlsOnBlur = false
+
+function onFocusIn(): void {
+  showControls.value = true
+  keepControlsOnBlur = false
+}
 
 function selectSearch(event: MouseEvent): void {
   closePicker()
@@ -25,19 +32,45 @@ function selectSearch(event: MouseEvent): void {
   if (event.target === event.currentTarget) mainInput.value?.focus()
 }
 
+/** 这些地方有自己的点击行为：输入胶囊、模式圆点、展开箭头、歌名/专辑输入框、选择卡片本身。 */
+const INTERACTIVE = '.search-capsule, .mode-button, .details-toggle, .optional-fields, .mode-picker'
+
+function isInteractiveTarget(target: Node): boolean {
+  const el = target instanceof Element ? target : target.parentElement
+  if (!el) return true
+  if (el.closest(INTERACTIVE)) return true
+  const marker = markerEl.value
+  return marker === target || (marker?.contains(target) ?? false)
+}
+
 function onOutsidePointerDown(event: PointerEvent): void {
-  if (event.target instanceof Node && !searchForm.value?.contains(event.target)) {
-    showControls.value = false
+  const target = event.target
+  const form = searchForm.value
+  if (!(target instanceof Node) || !form) return
+  // 点卡片、红点、胶囊、圆点、箭头或输入框：交给它们自己的点击处理。
+  if (isInteractiveTarget(target)) return
+  if (pickerOpen.value) {
+    // 卡片展开时点外面的空白：只收起卡片，搜索栏保持展开（红点回到原位，和图2 一致）。
+    keepControlsOnBlur = true
     hoveredIndex.value = null
-    pickerOpen.value = false
-    const focused = document.activeElement
-    if (focused instanceof HTMLElement && searchForm.value?.contains(focused)) focused.blur()
+    closePicker()
+    return
   }
+  // 卡片收起后点空白处（搜索栏里的空白也算）：连搜索栏一起收起，红点淡出。
+  showControls.value = false
+  hoveredIndex.value = null
+  pickerOpen.value = false
+  const focused = document.activeElement
+  if (focused instanceof HTMLElement && form.contains(focused)) focused.blur()
 }
 
 function onFocusOut(): void {
   queueMicrotask(() => {
     if (!searchForm.value?.contains(document.activeElement)) {
+      if (keepControlsOnBlur) {
+        keepControlsOnBlur = false
+        return
+      }
       showControls.value = false
       hoveredIndex.value = null
       pickerOpen.value = false
@@ -163,6 +196,18 @@ function closePicker(restoreFocus = false): void {
 }
 
 /**
+ * 红点本身也是按钮：卡片展开时点它 = 点当前模式（收起卡片，回到搜索栏展开态）；
+ * 卡片收起时点它 = 展开卡片。
+ */
+function onMarkerClick(): void {
+  if (pickerOpen.value) {
+    chooseMode(mode.value)
+    return
+  }
+  void openPicker()
+}
+
+/**
  * 当前模式的红点：点一下展开 / 收起选模式卡片；
  * 未选中的小圆点保持原来的「直接切换」快捷方式。
  */
@@ -240,7 +285,7 @@ function moveMode(event: KeyboardEvent): void {
 
 <template>
   <form ref="searchForm" class="search-control" :class="{ 'show-controls': showControls, 'picker-open': pickerOpen, 'marker-visible': markerVisible && !markerLanded }" role="search"
-    @focusin="showControls = true" @focusout="onFocusOut" @submit.prevent="$emit('submit')"
+    @focusin="onFocusIn" @focusout="onFocusOut" @submit.prevent="$emit('submit')"
     @keydown.esc="pickerOpen && closePicker(true)">
     <div class="search-capsule" :aria-busy="busy" @click="selectSearch">
       <button class="search-submit" type="submit" :disabled="!canSubmit || busy" :aria-label="busy ? '搜索中' : mode === 'song' ? '搜索歌曲' : '识别视频链接'" :title="mode === 'song' ? '搜索歌曲' : '识别视频链接'">
@@ -304,7 +349,7 @@ function moveMode(event: KeyboardEvent): void {
 
     <Transition name="picker">
       <div v-if="pickerOpen" :id="pickerId" class="mode-picker" role="dialog"
-        aria-label="选择搜索模式" @keydown="onPickerKey" @mousedown.prevent>
+        aria-label="选择搜索模式" @keydown="onPickerKey" @mousedown.prevent @click.self="closePicker(true)">
         <ul class="picker-list" role="radiogroup" aria-label="搜索模式">
           <li v-for="(item, index) in modes" :key="item.key">
             <button type="button" class="picker-option" :class="{ current: mode === item.key }" role="radio"
@@ -324,7 +369,8 @@ function moveMode(event: KeyboardEvent): void {
       </div>
     </Transition>
 
-    <span ref="markerEl" class="mode-marker" :class="{ 'is-hidden': !markerVisible }" :style="markerStyle" aria-hidden="true">
+    <span ref="markerEl" class="mode-marker" :class="{ 'is-hidden': !markerVisible }" :style="markerStyle" aria-hidden="true"
+      @mousedown.prevent @click="onMarkerClick">
       <svg class="marker-icon" :class="{ 'is-concealed': pickerOpen }" viewBox="0 0 24 24" focusable="false">
         <circle cx="5.4" cy="12" r="2.3" />
         <circle cx="12" cy="12" r="2.3" />
@@ -481,10 +527,10 @@ function moveMode(event: KeyboardEvent): void {
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 4px 18px color-mix(in srgb, var(--accent) 35%, transparent);
-  pointer-events: none;
+  cursor: pointer;
   transition: transform .42s cubic-bezier(.22, 1, .36, 1), opacity .18s ease;
 }
-.mode-marker.is-hidden { opacity: 0; transition: none; }
+.mode-marker.is-hidden { opacity: 0; pointer-events: none; transition: none; }
 /* 卡片展开时搜索栏里的圆点让位给飞到卡片里的红点。 */
 .picker-open .mode-switch .mode-dot { opacity: 0; transition-duration: .14s; }
 /* 红点在搜索栏上方时，当前模式的圆点先藏起来，避免同时出现两颗红点。 */
