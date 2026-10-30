@@ -261,3 +261,53 @@ test('等待播放完成期间由播放器暂停，旧 play Promise 返回不能
   await playing
   assert.equal(queue.snapshot().status, 'paused')
 })
+
+test('出错后重试同一首会回到失败时的进度，正常换歌仍从头播放', async () => {
+  const queue = createPlaylist(async (item) => ({ url: item.source.url }))
+  const seeks = []
+  let time = 0
+  queue.connect({
+    load: () => { time = 0 },
+    play: async () => {},
+    pause: () => {},
+    position: () => time,
+    seek: (seconds) => { time = seconds; seeks.push(seconds) },
+  })
+  queue.add(track('a')); queue.add(track('b'))
+
+  await queue.play('a')
+  assert.deepEqual(seeks, [])
+
+  time = 42.5
+  queue.fail('网络断开')
+  assert.equal(queue.snapshot().status, 'error')
+  await queue.play()
+  assert.deepEqual(seeks, [42.5])
+  assert.equal(queue.snapshot().status, 'playing')
+
+  await queue.play('b')
+  assert.deepEqual(seeks, [42.5])
+})
+
+test('解析失败（还没加载过音源）时重试不跳转进度', async () => {
+  let attempts = 0
+  const queue = createPlaylist(async () => {
+    if (++attempts === 1) throw new Error('解析失败')
+    return { url: 'a.mp3' }
+  })
+  const seeks = []
+  queue.connect({
+    load: () => {},
+    play: async () => {},
+    pause: () => {},
+    position: () => 88,
+    seek: (seconds) => seeks.push(seconds),
+  })
+  queue.add(track('a'))
+  await queue.play()
+  assert.equal(queue.snapshot().status, 'error')
+  assert.equal(queue.snapshot().source, null)
+  await queue.play()
+  assert.deepEqual(seeks, [])
+  assert.equal(queue.snapshot().status, 'playing')
+})

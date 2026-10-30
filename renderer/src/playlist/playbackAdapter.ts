@@ -11,6 +11,9 @@ export function connectPlaylistPlayback(queue: ReturnType<typeof createPlaylist>
       const error = controller.snapshot().error
       if (error) throw new Error(error)
     },
+    // 读 <audio> 的真实时间（快照里的 currentTime 在 seek 后会先被乐观地改掉）。
+    position: () => controller.element?.currentTime ?? controller.snapshot().currentTime,
+    seek: (seconds) => controller.seek(seconds),
   })
   const off = [
     controller.on('statechange', () => {

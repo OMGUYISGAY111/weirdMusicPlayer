@@ -13,6 +13,9 @@ export interface PlaylistPlayer {
   load(source: PlaybackSource): void
   play(): Promise<void>
   pause(): void
+  /** 当前播放进度（秒），重试同一首时用来回到原来的位置。 */
+  position?(): number
+  seek?(seconds: number): void
 }
 
 export type PlaybackMode = 'sequential' | 'repeat-all' | 'repeat-one' | 'shuffle'
@@ -84,6 +87,9 @@ export function createPlaylist(
   async function play(id = state.currentId ?? state.items[0]?.id): Promise<void> {
     const track = state.items.find((item) => item.id === id)
     if (!track) return
+    // 同一首在出错后重试：记住失败时的进度，加载成功后跳回去，而不是从 0 开始。
+    const retry = track.id === state.currentId && state.status === 'error' && state.source !== null
+    const resumeAt = retry ? Math.max(0, player?.position?.() ?? 0) : 0
     const token = ++generation
     const target = player
     target?.pause()
@@ -96,7 +102,12 @@ export function createPlaylist(
       if (!source.file && !source.url) throw new Error('没有可播放的音频地址')
       patch({ source, status: 'loading' })
       target.load(source)
+      if (resumeAt > 0) target.seek?.(resumeAt)
       await target.play()
+      if (token === generation && resumeAt > 0) {
+        // 有的流会丢掉加载前设置的起播位置，播起来后校正一次。
+        if (Math.abs((target.position?.() ?? 0) - resumeAt) > 1) target.seek?.(resumeAt)
+      }
       if (token === generation && !hasError() && !['buffering', 'paused'].includes(state.status)) patch({ status: 'playing' })
     } catch (error) {
       if (token === generation) patch({ status: 'error', error: error instanceof Error ? error.message : String(error) })
