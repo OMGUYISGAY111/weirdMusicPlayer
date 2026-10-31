@@ -59,12 +59,12 @@ onBeforeUnmount(() => { disconnect(); controller.dispose() })
 </template>
 
 <style scoped>
-.queue-dock { position: fixed; z-index: 20; bottom: 0; left: 0; right: 0; padding: 10px 28px 20px; background: linear-gradient(to top, var(--bg) 85%, transparent); }
+.queue-dock { position: fixed; z-index: 20; bottom: 0; left: 0; right: 0; padding: 10px 28px 20px; background: linear-gradient(to top, var(--mp-scrim) 85%, transparent); }
 .queue-dock > * { max-width: 1080px; margin: 0 auto; }
 .queue-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 8px 0; font-size: 12px; }
-.queue-controls a { color: var(--accent-2); }
+.queue-controls a { color: var(--mp-accent); }
 .queue-controls label { display: flex; align-items: center; gap: 6px; }
-.queue-controls select { color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; font: inherit; }
+.queue-controls select { color: var(--mp-text); background: var(--mp-panel); border: 1px solid var(--mp-border); border-radius: 6px; padding: 3px 6px; font: inherit; }
 .queue-controls button { padding: 4px 9px; font-size: 12px; }
-.queue-controls span { color: var(--text-dim); overflow-wrap: anywhere; }
+.queue-controls span { color: var(--mp-dim); overflow-wrap: anywhere; }
 </style>

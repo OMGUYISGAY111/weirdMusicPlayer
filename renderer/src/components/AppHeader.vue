@@ -60,7 +60,7 @@ onBeforeUnmount(() => observer?.disconnect())
   max-height: 100dvh;
   /* 搜索栏展开的「选模式」面板会溢出到 header 下方，这里不能裁剪。 */
   overflow: visible;
-  background: var(--mp-bg);
+  background: var(--mp-page);
 }
 
 /* 收起时去掉隐藏控件的占位，实色背景只覆盖主搜索栏。 */

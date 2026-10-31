@@ -593,7 +593,7 @@ defineExpose({
   border: 0;
   /* 顶部两角直角，底部圆角 */
   border-radius: 0 0 14px 14px;
-  box-shadow: 0 10px 30px rgba(15, 20, 30, 0.1);
+  box-shadow: var(--mp-shadow);
   color: var(--mp-text);
   user-select: none;
 }
@@ -715,7 +715,7 @@ defineExpose({
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(255, 255, 255, 0.75) 50%,
+    color-mix(in srgb, var(--mp-bg) 75%, transparent) 50%,
     transparent 100%
   );
   animation: mp-loading 1.1s ease-in-out infinite;
@@ -738,9 +738,9 @@ defineExpose({
   width: var(--mp-thumb-size);
   height: var(--mp-thumb-size);
   border-radius: 50%;
-  background: #fff;
+  background: var(--mp-bg);
   border: 2px solid var(--mp-accent);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--mp-shadow-sm);
   transform: translate(-50%, -50%);
   opacity: 0;
   transition: opacity 0.15s ease;
@@ -776,9 +776,11 @@ defineExpose({
   place-items: center;
   overflow: hidden;
   border-radius: 50%;
-  background: #1a1d21;
-  color: #fff;
-  box-shadow: 0 0 0 3px #fff, 0 0 0 4px rgba(0, 0, 0, 0.14);
+  background: var(--mp-text);
+  color: var(--mp-bg);
+  box-shadow:
+    0 0 0 3px var(--mp-bg),
+    0 0 0 4px color-mix(in srgb, var(--mp-text) 14%, transparent);
 }
 
 .mp-cover img {
@@ -838,15 +840,15 @@ defineExpose({
   border: none;
   border-radius: 50%;
   background: var(--mp-accent);
-  color: #fff;
+  color: var(--mp-on-accent);
   cursor: pointer;
-  box-shadow: 0 8px 20px rgba(255, 77, 94, 0.35);
+  box-shadow: 0 8px 20px var(--mp-accent-glow);
   transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
 }
 
 .mp-play:hover:not(:disabled) {
   transform: scale(1.05);
-  box-shadow: 0 10px 24px rgba(255, 77, 94, 0.42);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--mp-accent) 42%, transparent);
 }
 
 .mp-play:active:not(:disabled) {
@@ -888,7 +890,7 @@ defineExpose({
 }
 
 .mp-icon-btn:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--mp-hover);
 }
 
 .mp-icon-btn:focus-visible {
@@ -920,9 +922,9 @@ defineExpose({
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--mp-bg);
   border: 2px solid var(--mp-accent);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--mp-shadow-sm);
   cursor: pointer;
 }
 
@@ -930,8 +932,9 @@ defineExpose({
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--mp-bg);
   border: 2px solid var(--mp-accent);
+  box-shadow: var(--mp-shadow-sm);
   cursor: pointer;
 }
 
@@ -943,7 +946,7 @@ defineExpose({
 .mp-error {
   margin: 8px 0 0;
   font-size: 12px;
-  color: #e5484d;
+  color: var(--mp-danger);
 }
 
 @keyframes mp-spin {

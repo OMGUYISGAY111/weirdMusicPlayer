@@ -249,7 +249,7 @@ onMounted(() => {
 
 .head p {
   margin: 0;
-  color: var(--text-dim);
+  color: var(--mp-dim);
   font-size: 13.5px;
   line-height: 1.7;
   user-select: text;
@@ -260,9 +260,9 @@ onMounted(() => {
   flex-direction: column;
   gap: 12px;
   padding: 18px 20px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--mp-border);
   border-radius: 16px;
-  background: var(--panel);
+  background: var(--mp-panel);
 }
 
 .picker {
@@ -270,11 +270,11 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   font-size: 13px;
-  color: var(--text-dim);
+  color: var(--mp-dim);
 }
 
 .picker input {
-  color: var(--text);
+  color: var(--mp-text);
   font-size: 12.5px;
 }
 
@@ -292,7 +292,7 @@ onMounted(() => {
 .hint {
   margin: 0;
   font-size: 12.5px;
-  color: var(--text-dim);
+  color: var(--mp-dim);
   user-select: text;
 }
 
@@ -302,7 +302,7 @@ onMounted(() => {
   right: 0;
   bottom: 0;
   padding: 16px 28px 20px;
-  background: linear-gradient(to top, rgba(14, 15, 19, 0.96), rgba(14, 15, 19, 0));
+  background: linear-gradient(to top, var(--mp-scrim), transparent);
 }
 
 .dock > * {

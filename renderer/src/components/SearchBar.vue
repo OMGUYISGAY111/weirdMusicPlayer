@@ -382,15 +382,9 @@ function moveMode(event: KeyboardEvent): void {
 
 <style scoped>
 .search-control {
-  --panel: var(--mp-bg);
-  --text: var(--mp-text);
-  --text-dim: var(--mp-dim);
-  --accent: var(--mp-accent);
-  --accent-2: var(--mp-accent);
-  --border: var(--mp-track);
+  /* 配色只取 styles/main.css 的 --mp-* 令牌。 */
   position: relative;
-  color: var(--text);
-  color-scheme: light;
+  color: var(--mp-text);
   /* 外观调节：搜索框高度、边框厚度、圆点中心间距、收起后的上下间距。 */
   --search-height: 40px;
   --search-border-width: 1px;
@@ -399,7 +393,7 @@ function moveMode(event: KeyboardEvent): void {
   width: min(100%, 680px);
   margin: 14px auto 18px;
 }
-.search-capsule { position: relative; isolation: isolate; display: flex; align-items: center; height: var(--search-height); padding: 0 18px 0 10px; border: var(--search-border-width) solid var(--border); border-radius: 999px; background: var(--panel); transition: border-color .25s, box-shadow .25s; }
+.search-capsule { position: relative; isolation: isolate; display: flex; align-items: center; height: var(--search-height); padding: 0 18px 0 10px; border: var(--search-border-width) solid var(--mp-border); border-radius: 999px; background: var(--mp-panel); transition: border-color .25s, box-shadow .25s; }
 .search-capsule::before {
   content: '';
   position: absolute;
@@ -408,20 +402,22 @@ function moveMode(event: KeyboardEvent): void {
   border-radius: inherit;
   pointer-events: none;
   background: linear-gradient(110deg,
-    color-mix(in srgb, var(--panel) 85%, transparent),
-    color-mix(in srgb, var(--accent) 12%, transparent));
+    color-mix(in srgb, var(--mp-panel) 85%, transparent),
+    var(--mp-accent-soft));
   opacity: 0;
   transition: opacity .25s ease;
 }
 .show-controls .search-capsule::before { opacity: 1; }
-.search-capsule:focus-within { border-color: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 10%, transparent); }
-.search-submit { flex: 0 0 min(44px, calc(var(--search-height) - 12px)); display: grid; place-items: center; width: min(44px, calc(var(--search-height) - 12px)); height: min(44px, calc(var(--search-height) - 12px)); padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text); }
-.search-submit:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent); transform: none; }
+.search-capsule:focus-within { border-color: var(--mp-accent); box-shadow: 0 0 0 4px var(--mp-accent-soft); }
+.search-submit { flex: 0 0 min(44px, calc(var(--search-height) - 12px)); display: grid; place-items: center; width: min(44px, calc(var(--search-height) - 12px)); height: min(44px, calc(var(--search-height) - 12px)); padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--mp-text); }
+.search-submit:hover { background: var(--mp-accent-soft); color: var(--mp-accent); transform: none; }
 .search-submit:disabled { opacity: .4; cursor: default; transform: none; }
 .search-submit svg { display: block; width: 24px; height: 24px; }
 .song-field, .link-field { flex: 1; }
 .search-capsule input { width: 100%; min-width: 0; padding: 8px 14px; border: 0; border-radius: 0; background: transparent; font-size: 14px; }
-.search-capsule input::placeholder { color: var(--text-dim); }
+/* 胶囊自己画聚焦光圈，输入框内部的焦点环要收掉，否则两层圈叠在一起。 */
+.search-capsule input:focus { border-color: transparent; box-shadow: none; }
+.search-capsule input::placeholder { color: var(--mp-dim); }
 .details-toggle {
   display: grid;
   place-items: center;
@@ -431,9 +427,9 @@ function moveMode(event: KeyboardEvent): void {
   padding: 8px;
   border: 0;
   background: transparent;
-  color: var(--text-dim);
+  color: var(--mp-dim);
 }
-.details-toggle:hover { background: transparent; color: var(--accent); transform: none; }
+.details-toggle:hover { background: transparent; color: var(--mp-accent); transform: none; }
 .details-toggle, .mode-caption, .mode-switch {
   opacity: 0;
   visibility: hidden;
@@ -446,7 +442,7 @@ function moveMode(event: KeyboardEvent): void {
 }
 .details-toggle svg { width: 22px; height: 22px; transition: transform .25s ease; }
 .details-toggle.expanded svg { transform: rotate(180deg); }
-.details-toggle:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+.details-toggle:focus-visible { outline: 2px solid var(--mp-accent); outline-offset: 2px; }
 .optional-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -455,9 +451,9 @@ function moveMode(event: KeyboardEvent): void {
   padding: 8px 16px 16px;
 }
 .optional-fields label { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.optional-fields label > span { color: var(--text-dim); font-size: 12px; }
+.optional-fields label > span { color: var(--mp-dim); font-size: 12px; }
 .optional-fields small { margin-left: 4px; opacity: .65; font-size: 11px; }
-.optional-fields input { width: 100%; min-width: 0; background: var(--panel); }
+.optional-fields input { width: 100%; min-width: 0; background: var(--mp-panel); }
 .optional-fields { overflow: hidden; transition: max-height .25s ease, opacity .2s ease, padding .25s ease, visibility .25s; }
 .search-control:not(.show-controls) .optional-fields {
   max-height: 0;
@@ -472,31 +468,26 @@ function moveMode(event: KeyboardEvent): void {
 .search-control:not(.show-controls) .mode-switch { margin-top: var(--rest-mode-gap); }
 .mode-button { position: absolute; top: 0; left: calc(50% - var(--mode-gap) / 2); display: grid; place-items: center; width: var(--mode-gap); height: 44px; padding: 0; border: 0; border-radius: 50%; background: transparent; transform: translateX(calc(var(--offset) * var(--mode-gap))); transition: transform .5s cubic-bezier(.22, 1, .36, 1); }
 .mode-button:hover { background: transparent; }
-.mode-dot { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--text-dim); opacity: .5; transform: scale(.3); transition: transform .5s cubic-bezier(.22, 1, .36, 1), background .3s, opacity .3s, box-shadow .3s; }
+.mode-dot { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--mp-dim); opacity: .5; transform: scale(.3); transition: transform .5s cubic-bezier(.22, 1, .36, 1), background .3s, opacity .3s, box-shadow .3s; }
 .mode-button:hover .mode-dot { opacity: 1; }
 .mode-button.selected { transform: translateX(0); }
-.selected .mode-dot { transform: scale(1); opacity: 1; background: var(--accent); box-shadow: 0 4px 18px color-mix(in srgb, var(--accent) 30%, transparent); }
+.selected .mode-dot { transform: scale(1); opacity: 1; background: var(--mp-accent); box-shadow: 0 4px 18px color-mix(in srgb, var(--mp-accent) 30%, transparent); }
 /* 选中的红点里放省略号；切模式时红点变灰、灰点变红，圆点随按钮滑动。 */
-.mode-dot-icon { width: 14px; height: 14px; fill: #fff; transition: opacity .15s ease; }
+.mode-dot-icon { width: 14px; height: 14px; fill: var(--mp-on-accent); transition: opacity .15s ease; }
 .mode-dot-icon.is-concealed { opacity: 0; }
 .mode-button:focus-visible { outline: none; }
-.mode-button:focus-visible .mode-dot { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 22%, transparent), 0 4px 18px color-mix(in srgb, var(--accent) 30%, transparent); }
-.search-submit:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
-.mode-caption { height: 22px; text-align: center; color: var(--text-dim); font-size: 12px; letter-spacing: 1px; }
+.mode-button:focus-visible .mode-dot { box-shadow: 0 0 0 4px var(--mp-accent-ring), 0 4px 18px color-mix(in srgb, var(--mp-accent) 30%, transparent); }
+.search-submit:focus-visible { outline: 2px solid var(--mp-accent); outline-offset: 2px; }
+.mode-caption { height: 22px; text-align: center; color: var(--mp-dim); font-size: 12px; letter-spacing: 1px; }
 .mode-caption span { display: inline-block; }
-.mode-caption .current-mode { color: var(--accent); }
+.mode-caption .current-mode { color: var(--mp-accent); }
 .caption-enter-active, .caption-leave-active { transition: opacity .15s, transform .15s; }
 .caption-enter-from { opacity: 0; transform: translateY(5px); }
 .caption-leave-to { opacity: 0; transform: translateY(-5px); }
-.search-spinner { flex: 0 0 16px; height: 16px; margin-left: 8px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+.search-spinner { flex: 0 0 16px; height: 16px; margin-left: 8px; border: 2px solid var(--mp-border); border-top-color: var(--mp-accent); border-radius: 50%; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-/* 点中间的红点展开的选模式卡片：深色卡片以红点为原点展开（红点由 .mode-marker 单独绘制）。 */
+/* 点中间的红点展开的选模式卡片：白色卡片以红点为原点展开（红点由 .mode-marker 单独绘制）。 */
 .mode-picker {
-  --pk-bg: #1b1e27;
-  --pk-border: #3b4256;
-  --pk-text: #e8eaf2;
-  --pk-dim: #9aa3b8;
-  --pk-accent: var(--mp-accent);
   position: absolute;
   top: calc(var(--search-height) + 34px);
   right: 0;
@@ -505,12 +496,11 @@ function moveMode(event: KeyboardEvent): void {
   width: min(340px, calc(100% - 8px));
   margin: 0 auto;
   padding: 8px;
-  border: 1px solid var(--pk-border);
+  border: 1px solid var(--mp-border);
   border-radius: 16px;
-  background: var(--pk-bg);
-  color: var(--pk-text);
-  color-scheme: dark;
-  box-shadow: 0 24px 60px rgba(10, 12, 18, .45), 0 2px 10px rgba(10, 12, 18, .3);
+  background: var(--mp-panel);
+  color: var(--mp-text);
+  box-shadow: var(--mp-shadow-lg);
   transform-origin: 50% 0;
 }
 /* 红点：收起时在搜索栏中心，展开时飞到卡片里「当前模式」那一行的槽位。 */
@@ -525,8 +515,8 @@ function moveMode(event: KeyboardEvent): void {
   height: 20px;
   margin: -10px 0 0 -10px;
   border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 4px 18px color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--mp-accent);
+  box-shadow: 0 4px 18px var(--mp-accent-glow);
   cursor: pointer;
   transition: transform .42s cubic-bezier(.22, 1, .36, 1), opacity .18s ease;
 }
@@ -536,20 +526,20 @@ function moveMode(event: KeyboardEvent): void {
 /* 红点在搜索栏上方时，当前模式的圆点先藏起来，避免同时出现两颗红点。 */
 .marker-visible .mode-button.selected .mode-dot { opacity: 0; transition-duration: .14s; }
 /* 红点里的省略号：卡片展开（红点在卡片里）时隐藏，飞回搜索栏时与下面的圆点对齐。 */
-.marker-icon { width: 14px; height: 14px; fill: #fff; transition: opacity .12s ease; }
+.marker-icon { width: 14px; height: 14px; fill: var(--mp-on-accent); transition: opacity .12s ease; }
 .marker-icon.is-concealed { opacity: 0; }
 .picker-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
-.picker-option { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--pk-dim); font-size: 13px; line-height: 1.45; text-align: left; }
-.picker-option:hover { background: rgba(255, 255, 255, .06); color: var(--pk-text); transform: none; }
-.picker-option:focus-visible { outline: 2px solid var(--pk-accent); outline-offset: -2px; }
-.picker-option.current { color: var(--pk-accent); }
+.picker-option { display: flex; align-items: center; gap: 12px; width: 100%; padding: 9px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--mp-dim); font-size: 13px; line-height: 1.45; text-align: left; }
+.picker-option:hover { background: var(--mp-hover); color: var(--mp-text); transform: none; }
+.picker-option:focus-visible { outline: 2px solid var(--mp-accent); outline-offset: -2px; }
+.picker-option.current { color: var(--mp-accent); }
 /* 卡片里只有红点一个圆点，未选中的行只留 20px 的槽位给红点落脚。 */
 .picker-slot { position: relative; flex: 0 0 20px; width: 20px; height: 20px; }
 .picker-slot::before { content: ''; position: absolute; inset: 6px; border: 1.5px solid currentColor; border-radius: 50%; opacity: .8; }
 .picker-label { flex: 1; min-width: 0; }
 /* 底部这行跟随鼠标所在的模式：当前模式红色，其它模式灰色。 */
-.picker-foot { display: flex; justify-content: center; margin: 8px 2px 2px; padding-top: 9px; border-top: 1px solid rgba(255, 255, 255, .08); color: var(--pk-dim); font-size: 12.5px; letter-spacing: .5px; }
-.picker-foot .is-current { color: var(--pk-accent); }
+.picker-foot { display: flex; justify-content: center; margin: 8px 2px 2px; padding-top: 9px; border-top: 1px solid var(--mp-border); color: var(--mp-dim); font-size: 12.5px; letter-spacing: .5px; }
+.picker-foot .is-current { color: var(--mp-accent); }
 .picker-enter-active { transition: opacity .16s ease, transform .26s cubic-bezier(.22, 1, .36, 1); }
 .picker-leave-active { transition: opacity .14s ease, transform .18s ease-in; }
 .picker-enter-from, .picker-leave-to { opacity: 0; transform: scale(.94); }

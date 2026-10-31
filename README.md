@@ -142,16 +142,28 @@ function onPick(event: Event) {
 
 对外方法（通过 `ref` 调用）：`play()`、`pause()`、`toggle()`、`seekTo(seconds)`、`setVolume(0~1)`、`toggleMute()`。
 
-换深色主题只覆盖 CSS 变量即可：
+全站配色只走 [`renderer/src/styles/main.css`](renderer/src/styles/main.css) 里的 `--mp-*` 令牌：**组件里不允许再写死色值**，也不再保留 `--bg` / `--panel` / `--accent` 这类旧变量。默认是浅色（白底 + 主题红），换主题只在 `:root` 覆盖变量：
 
 ```css
-.audio-player-dark :deep(.mp-player) {
-  --mp-bg: #1b1e27;
+:root {
+  --mp-page: #0e0f13;   /* 页面底色 */
+  --mp-bg: #1b1e27;     /* 卡片 / 面板底色 */
   --mp-text: #e8eaf2;
   --mp-dim: #9aa3b8;
   --mp-track: #2b3040;
+  --mp-border: #343a4b;
 }
 ```
+
+| 令牌 | 作用 |
+| --- | --- |
+| `--mp-page` / `--mp-bg` / `--mp-panel` | 页面底色 / 卡片面 / 面板（= `--mp-bg`） |
+| `--mp-text` / `--mp-dim` / `--mp-on-accent` | 主文字 / 次要文字 / 主题色底上的文字 |
+| `--mp-accent` | 主题红：强调、进度、选中、链接都用它 |
+| `--mp-track` / `--mp-border` | 轨道、弱背景块 / 描边、分隔线 |
+| `--mp-ok` / `--mp-warn` / `--mp-danger` | 成功 / 警告 / 错误状态 |
+| `--mp-hover` / `--mp-accent-soft` / `--mp-accent-ring` / `--mp-accent-glow` | 悬浮底色 / 主题色浅底、光圈、投影 |
+| `--mp-scrim` / `--mp-shadow-sm` / `--mp-shadow` / `--mp-shadow-lg` | 底部渐隐遮罩 / 三档阴影 |
 
 进度线**紧贴卡片上沿**（顶部两角是直角，没有白边）。已播放段是实心主题红，未播放段是灰色轨道（`--mp-track`）。
 

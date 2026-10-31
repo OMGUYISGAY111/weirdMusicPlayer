@@ -385,7 +385,7 @@ function panelFallback(panel: Panel): string {
 }
 
 .vs-link-summary { display: flex; align-items: flex-start; gap: 14px; }
-.vs-link-cover { width: 144px; max-width: 35%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; }
+.vs-link-cover { width: 144px; max-width: 35%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: var(--mp-track); }
 
 .vs-head {
   display: flex;
@@ -405,7 +405,7 @@ function panelFallback(panel: Panel): string {
   max-width: 640px;
   font-size: 12.5px;
   line-height: 1.65;
-  color: var(--text-dim);
+  color: var(--mp-dim);
   user-select: text;
 }
 
@@ -414,36 +414,36 @@ function panelFallback(panel: Panel): string {
   font-size: 12px;
   padding: 5px 11px;
   border-radius: 999px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--mp-border);
   white-space: nowrap;
 }
 
 .vs-pill.ok {
-  color: var(--ok);
-  border-color: rgba(61, 220, 151, 0.4);
-  background: rgba(61, 220, 151, 0.1);
+  color: var(--mp-ok);
+  border-color: color-mix(in srgb, var(--mp-ok) 40%, transparent);
+  background: color-mix(in srgb, var(--mp-ok) 10%, transparent);
 }
 
 .vs-pill.warn {
-  color: var(--warn);
-  border-color: rgba(255, 184, 77, 0.4);
-  background: rgba(255, 184, 77, 0.1);
+  color: var(--mp-warn);
+  border-color: color-mix(in srgb, var(--mp-warn) 40%, transparent);
+  background: color-mix(in srgb, var(--mp-warn) 10%, transparent);
 }
 
 .vs-query {
   margin: 0;
   font-size: 12.5px;
-  color: var(--text-dim);
+  color: var(--mp-dim);
   user-select: text;
 }
 
 .vs-query code {
-  color: #cbd2e6;
+  color: var(--mp-text);
 }
 
 .vs-query-busy {
   margin-left: 10px;
-  color: var(--warn);
+  color: var(--mp-warn);
 }
 
 .vs-grid {
@@ -458,9 +458,9 @@ function panelFallback(panel: Panel): string {
   gap: 10px;
   min-height: 132px;
   padding: 14px 16px 16px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--mp-border);
   border-radius: 14px;
-  background: var(--panel);
+  background: var(--mp-panel);
 }
 
 .vs-panel-head {
@@ -479,32 +479,29 @@ function panelFallback(panel: Panel): string {
   font-weight: 600;
 }
 
+/* 平台标记点：统一用主题红，平台名由标题文字区分。 */
 .vs-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--accent-2);
-}
-
-.vs-dot.youtube {
-  background: #ff4d4d;
+  background: var(--mp-accent);
 }
 
 .vs-panel-meta {
   font-size: 11.5px;
-  color: var(--text-dim);
+  color: var(--mp-dim);
 }
 
 .vs-state {
   margin: 0;
   font-size: 12.5px;
   line-height: 1.7;
-  color: var(--text-dim);
+  color: var(--mp-dim);
   user-select: text;
 }
 
 .vs-state.error {
-  color: #ff9c9c;
+  color: var(--mp-danger);
 }
 
 .vs-state.error p {
@@ -514,7 +511,7 @@ function panelFallback(panel: Panel): string {
 }
 
 .vs-state a {
-  color: var(--accent-2);
+  color: var(--mp-accent);
   font-size: 12.5px;
   text-decoration: none;
 }
@@ -541,7 +538,7 @@ function panelFallback(panel: Panel): string {
 }
 
 .vs-item:hover {
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--mp-hover);
 }
 
 .vs-thumb {
@@ -552,8 +549,8 @@ function panelFallback(panel: Panel): string {
   place-items: center;
   overflow: hidden;
   border-radius: 8px;
-  background: #11131a;
-  border: 1px solid var(--border);
+  background: var(--mp-track);
+  border: 1px solid var(--mp-border);
 }
 
 .vs-thumb img {
@@ -564,7 +561,7 @@ function panelFallback(panel: Panel): string {
 }
 
 .vs-thumb-fallback {
-  color: var(--text-dim);
+  color: var(--mp-dim);
   font-size: 14px;
 }
 
@@ -574,8 +571,8 @@ function panelFallback(panel: Panel): string {
   bottom: 4px;
   padding: 1px 5px;
   border-radius: 4px;
-  background: rgba(0, 0, 0, 0.72);
-  color: #f4f6fb;
+  background: color-mix(in srgb, var(--mp-text) 72%, transparent);
+  color: var(--mp-on-accent);
   font-size: 10.5px;
   font-variant-numeric: tabular-nums;
 }
@@ -592,14 +589,14 @@ function panelFallback(panel: Panel): string {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  color: var(--text);
+  color: var(--mp-text);
   font-size: 13px;
   line-height: 1.45;
   text-decoration: none;
 }
 
 .vs-item-title:hover {
-  color: #fff;
+  color: var(--mp-accent);
   text-decoration: underline;
 }
 
@@ -609,7 +606,7 @@ function panelFallback(panel: Panel): string {
   flex-wrap: wrap;
   gap: 8px;
   font-size: 11.5px;
-  color: var(--text-dim);
+  color: var(--mp-dim);
 }
 
 .vs-author {
@@ -633,9 +630,15 @@ function panelFallback(panel: Panel): string {
 }
 
 .vs-item-actions button.vs-play {
-  border-color: rgba(124, 92, 255, 0.5);
-  background: linear-gradient(135deg, rgba(124, 92, 255, 0.85), rgba(79, 125, 255, 0.85));
+  border-color: transparent;
+  background: var(--mp-accent);
+  color: var(--mp-on-accent);
   font-weight: 600;
+}
+
+.vs-item-actions button.vs-play:hover {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--mp-accent) 88%, var(--mp-text));
 }
 
 @media (max-width: 820px) {

@@ -189,8 +189,12 @@ onMounted(refresh)
   place-items: center;
   font-size: 22px;
   border-radius: 13px;
-  background: linear-gradient(135deg, rgba(124, 92, 255, 0.9), rgba(38, 208, 206, 0.85));
-  box-shadow: 0 10px 26px rgba(124, 92, 255, 0.35);
+  background: linear-gradient(
+    135deg,
+    var(--mp-accent),
+    color-mix(in srgb, var(--mp-accent) 45%, var(--mp-warn))
+  );
+  box-shadow: 0 10px 26px var(--mp-accent-glow);
 }
 
 .brand h1 {
@@ -202,44 +206,57 @@ onMounted(refresh)
 .brand p {
   margin: 3px 0 0;
   font-size: 12.5px;
-  color: var(--text-dim);
+  color: var(--mp-dim);
 }
 
 .pill {
   font-size: 12.5px;
   padding: 6px 12px;
   border-radius: 999px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--mp-border);
   white-space: nowrap;
 }
 
 .pill.ok {
-  color: var(--ok);
-  border-color: rgba(61, 220, 151, 0.4);
-  background: rgba(61, 220, 151, 0.1);
+  color: var(--mp-ok);
+  border-color: color-mix(in srgb, var(--mp-ok) 40%, transparent);
+  background: color-mix(in srgb, var(--mp-ok) 10%, transparent);
 }
 
 .pill.warn {
-  color: var(--warn);
-  border-color: rgba(255, 184, 77, 0.4);
-  background: rgba(255, 184, 77, 0.1);
+  color: var(--mp-warn);
+  border-color: color-mix(in srgb, var(--mp-warn) 40%, transparent);
+  background: color-mix(in srgb, var(--mp-warn) 10%, transparent);
 }
 
 .hero {
   padding: 26px 28px;
   border-radius: 20px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--mp-border);
   background:
-    radial-gradient(700px 240px at 88% -40%, rgba(38, 208, 206, 0.28), transparent 70%),
-    radial-gradient(600px 260px at 0% -30%, rgba(124, 92, 255, 0.32), transparent 70%),
-    var(--panel);
+    radial-gradient(
+      700px 240px at 88% -40%,
+      color-mix(in srgb, var(--mp-accent) 14%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      600px 260px at 0% -30%,
+      color-mix(in srgb, var(--mp-warn) 12%, transparent),
+      transparent 70%
+    ),
+    var(--mp-panel);
 }
 
 .hero h2 {
   margin: 0 0 10px;
   font-size: 34px;
   letter-spacing: -0.5px;
-  background: linear-gradient(96deg, #fff, #c9b8ff 55%, #8ef0ee);
+  background: linear-gradient(
+    96deg,
+    var(--mp-text),
+    color-mix(in srgb, var(--mp-accent) 70%, var(--mp-text)) 55%,
+    var(--mp-accent)
+  );
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -249,7 +266,7 @@ onMounted(refresh)
   margin: 0;
   max-width: 720px;
   line-height: 1.7;
-  color: #c6cbe0;
+  color: var(--mp-dim);
   font-size: 14px;
   user-select: text;
 }
@@ -263,11 +280,11 @@ onMounted(refresh)
 
 .chip {
   font-size: 12px;
-  color: #cfd4e8;
+  color: var(--mp-text);
   padding: 5px 10px;
   border-radius: 8px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
+  background: var(--mp-track);
+  border: 1px solid var(--mp-border);
 }
 
 .grid {
@@ -277,9 +294,9 @@ onMounted(refresh)
 }
 
 .card {
-  border: 1px solid var(--border);
+  border: 1px solid var(--mp-border);
   border-radius: 16px;
-  background: var(--panel);
+  background: var(--mp-panel);
   padding: 18px 20px;
   display: flex;
   flex-direction: column;
@@ -298,7 +315,7 @@ onMounted(refresh)
   font-size: 14px;
   font-weight: 600;
   letter-spacing: 0.3px;
-  color: #dfe3f2;
+  color: var(--mp-text);
 }
 
 dl {
@@ -310,7 +327,7 @@ dl {
 }
 
 dt {
-  color: var(--text-dim);
+  color: var(--mp-dim);
 }
 
 dd {
@@ -322,7 +339,7 @@ dd {
 .hint {
   margin: 0;
   font-size: 12px;
-  color: var(--text-dim);
+  color: var(--mp-dim);
   user-select: text;
 }
 
@@ -353,11 +370,11 @@ dd {
   min-height: 74px;
   padding: 12px 14px;
   border-radius: 12px;
-  background: #0f1117;
-  border: 1px solid var(--border);
+  background: var(--mp-track);
+  border: 1px solid var(--mp-border);
   font-size: 12.5px;
   line-height: 1.6;
-  color: #b9e8dc;
+  color: var(--mp-text);
   white-space: pre-wrap;
   word-break: break-word;
   user-select: text;
@@ -368,7 +385,11 @@ dd {
   font-size: 40px;
   font-weight: 700;
   line-height: 1;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  background: linear-gradient(
+    135deg,
+    var(--mp-accent),
+    color-mix(in srgb, var(--mp-accent) 55%, var(--mp-warn))
+  );
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -382,13 +403,13 @@ button.ghost {
 }
 
 button.danger:hover {
-  border-color: #ff6b6b;
-  color: #ff9c9c;
+  border-color: var(--mp-danger);
+  color: var(--mp-danger);
 }
 
 .footer {
   font-size: 12px;
-  color: var(--text-dim);
+  color: var(--mp-dim);
   text-align: center;
   padding-top: 4px;
   user-select: text;

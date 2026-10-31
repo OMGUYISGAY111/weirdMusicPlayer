@@ -1,24 +1,41 @@
+/* ────────────────────────────────────────────────────────────────
+   全站配色：--mp-* 是唯一真源，组件里只允许用这些变量（不要再写死色值）。
+   换主题只覆盖这里的变量即可，例如深色：
+     :root {
+       --mp-page: #0e0f13; --mp-bg: #1b1e27; --mp-text: #e8eaf2;
+       --mp-dim: #9aa3b8;  --mp-track: #2b3040; --mp-border: #343a4b;
+     }
+   ──────────────────────────────────────────────────────────────── */
 :root {
-  /* 播放器与搜索组件共用的配色。 */
-  --mp-bg: #ffffff;
-  --mp-text: #1a1d21;
-  --mp-dim: #9298a1;
-  --mp-accent: #ff4d5e;
-  --mp-track: #e9ebef;
+  /* 底色 */
+  --mp-page: #f6f7f9; /* 页面底色 */
+  --mp-bg: #ffffff; /* 卡片、面板、输入框底色 */
+  --mp-panel: var(--mp-bg); /* --mp-bg 的语义别名 */
+  --mp-track: #e9ebef; /* 进度轨道、弱背景块 */
+  --mp-border: #e2e5ea; /* 描边、分隔线 */
 
-  --bg: #0e0f13;
-  --bg-soft: #16181f;
-  --panel: #1b1e27;
-  --panel-2: #22263292;
-  --border: #2b3040;
-  --text: #e8eaf2;
-  --text-dim: #9aa3b8;
-  --accent: #7c5cff;
-  --accent-2: #26d0ce;
-  --ok: #3ddc97;
-  --warn: #ffb84d;
+  /* 文字 */
+  --mp-text: #1a1d21; /* 主文字 */
+  --mp-dim: #9298a1; /* 次要文字、占位符 */
+  --mp-on-accent: #ffffff; /* 主题色底上的文字 / 图标 */
 
-  color-scheme: dark;
+  /* 强调与状态 */
+  --mp-accent: #ff4d5e; /* 主题色：红 */
+  --mp-ok: #2f9e68;
+  --mp-warn: #d9822b;
+  --mp-danger: #e5484d;
+
+  /* 由上面推导的语义色：组件里不要再写死 rgba() */
+  --mp-hover: color-mix(in srgb, var(--mp-text) 6%, transparent); /* 悬浮底色 */
+  --mp-accent-soft: color-mix(in srgb, var(--mp-accent) 12%, transparent);
+  --mp-accent-ring: color-mix(in srgb, var(--mp-accent) 22%, transparent);
+  --mp-accent-glow: color-mix(in srgb, var(--mp-accent) 35%, transparent);
+  --mp-scrim: color-mix(in srgb, var(--mp-page) 96%, transparent); /* 底部渐隐遮罩 */
+  --mp-shadow-sm: 0 1px 4px color-mix(in srgb, var(--mp-text) 20%, transparent);
+  --mp-shadow: 0 10px 30px color-mix(in srgb, var(--mp-text) 10%, transparent);
+  --mp-shadow-lg: 0 24px 60px color-mix(in srgb, var(--mp-text) 18%, transparent);
+
+  color-scheme: light;
   font-family: 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -37,28 +54,29 @@ body,
 }
 
 body {
-  background: var(--bg);
-  color: var(--text);
+  background: var(--mp-page);
+  color: var(--mp-text);
   overflow: hidden;
   user-select: none;
 }
 
 button {
   font: inherit;
-  color: inherit;
+  color: var(--mp-text);
   cursor: pointer;
-  border: 1px solid var(--border);
-  background: linear-gradient(180deg, #262a37, #1e222c);
+  border: 1px solid var(--mp-border);
+  background: var(--mp-bg);
   border-radius: 10px;
   padding: 9px 14px;
   transition:
     transform 0.12s ease,
     border-color 0.12s ease,
-    background 0.12s ease;
+    background 0.12s ease,
+    color 0.12s ease;
 }
 
 button:hover {
-  border-color: var(--accent);
+  border-color: var(--mp-accent);
   transform: translateY(-1px);
 }
 
@@ -67,24 +85,49 @@ button:active {
 }
 
 button.primary {
-  background: linear-gradient(135deg, var(--accent), #4f7dff);
+  background: var(--mp-accent);
   border-color: transparent;
+  color: var(--mp-on-accent);
   font-weight: 600;
+}
+
+button.primary:hover {
+  background: color-mix(in srgb, var(--mp-accent) 88%, var(--mp-text));
+  border-color: transparent;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  transform: none;
 }
 
 input {
   font: inherit;
-  color: inherit;
-  background: #11131a;
-  border: 1px solid var(--border);
+  color: var(--mp-text);
+  background: var(--mp-bg);
+  border: 1px solid var(--mp-border);
   border-radius: 10px;
   padding: 9px 12px;
   outline: none;
   user-select: text;
 }
 
+input::placeholder {
+  color: var(--mp-dim);
+}
+
 input:focus {
-  border-color: var(--accent);
+  border-color: var(--mp-accent);
+  box-shadow: 0 0 0 3px var(--mp-accent-soft);
+}
+
+select {
+  font: inherit;
+  color: var(--mp-text);
+  background: var(--mp-bg);
+  border: 1px solid var(--mp-border);
+  border-radius: 8px;
 }
 
 code {

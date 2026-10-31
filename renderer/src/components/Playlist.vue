@@ -37,20 +37,20 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
-.playlist { padding: 18px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; }
+.playlist { padding: 18px; background: var(--mp-panel); border: 1px solid var(--mp-border); border-radius: 14px; box-shadow: var(--mp-shadow-sm); }
 header, li { display: flex; align-items: center; gap: 12px; }
 header { justify-content: space-between; }
 h2 { margin: 0; font-size: 17px; }
-small, .empty, .number { color: var(--text-dim); font-size: 12px; }
+small, .empty, .number { color: var(--mp-dim); font-size: 12px; }
 h2 small { margin-left: 8px; font-weight: normal; }
 ol { list-style: none; padding: 0; margin: 12px 0 0; max-height: 380px; overflow: auto; }
 li { padding: 10px 6px; border-radius: 8px; }
-li.current { background: rgba(124, 92, 255, .13); }
+li.current { background: var(--mp-accent-soft); }
 .number { width: 22px; text-align: center; }
-.cover { width: 42px; height: 42px; object-fit: cover; border-radius: 6px; flex-shrink: 0; }
+.cover { width: 42px; height: 42px; object-fit: cover; border-radius: 6px; flex-shrink: 0; background: var(--mp-track); }
 .info { flex: 1; min-width: 0; display: grid; gap: 5px; }
 strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 button { padding: 6px 10px; font-size: 12px; flex-shrink: 0; }
-.current-label { color: var(--accent-2); font-size: 12px; }
+.current-label { color: var(--mp-accent); font-size: 12px; }
 @media (max-width: 600px) { .current-label { display: none; } li { gap: 6px; } }
 </style>

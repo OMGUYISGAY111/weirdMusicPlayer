@@ -77,7 +77,7 @@ async function onPlay(item: MediaSearchItem): Promise<void> {
 .head p {
   margin: 0;
   max-width: 760px;
-  color: var(--text-dim);
+  color: var(--mp-dim);
   font-size: 13px;
   line-height: 1.7;
   user-select: text;
@@ -90,7 +90,7 @@ async function onPlay(item: MediaSearchItem): Promise<void> {
 }
 
 .nav a {
-  color: var(--accent-2);
+  color: var(--mp-accent);
   text-decoration: none;
 }
 
@@ -102,7 +102,7 @@ async function onPlay(item: MediaSearchItem): Promise<void> {
   margin: 0;
   font-size: 12.5px;
   line-height: 1.6;
-  color: var(--text-dim);
+  color: var(--mp-dim);
   user-select: text;
   word-break: break-word;
 }
