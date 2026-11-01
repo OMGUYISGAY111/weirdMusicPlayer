@@ -1,30 +1,69 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import Playlist from '@/components/Playlist.vue'
+import PlaylistBar from '@/components/PlaylistBar.vue'
 import VideoSearch from '@/components/VideoSearch.vue'
 import type { MediaSearchItem } from '@/bridge/host'
+import type { PlaylistOption } from '@/playlist/library'
 import { usePlaylistStore } from '@/stores/playlist'
 import { trackFromSearch } from '@/playlist/hostAdapter'
 
 /**
- * 页面只负责把搜索事件转换为列表操作；解析和播放由列表适配层处理。
+ * 页面只负责把搜索结果转换为列表操作；解析、播放和列表管理都在 store 里。
+ * 搜索页顶部是列表栏（切换 / 新建 / 重命名 / 删除 / 导入 / 导出），
+ * 下面是当前列表的曲目；搜索结果的「加入列表」会弹出目标列表选择。
  */
 
 const playlist = usePlaylistStore()
 const status = ref('搜索视频后可以加入列表，或立即播放。')
+const transfer = ref('')
+const transferring = ref(false)
 const searchDockHeight = ref(92)
 
-function onAdd(item: MediaSearchItem): string {
+const playlistOptions = computed<PlaylistOption[]>(() => playlist.playlists.map((record) => ({
+  id: record.id,
+  name: record.name,
+  count: record.items.length,
+  active: record.id === playlist.activeId,
+})))
+
+function onAdd(item: MediaSearchItem, playlistId: string | null): void {
   const track = trackFromSearch(item)
-  const exists = playlist.state.items.some((entry) => entry.id === track.id)
-  const id = playlist.add(track)
-  if (exists && (track.cover || track.artist)) playlist.updateMetadata(id, track)
-  status.value = exists ? `列表中已有：${item.title}` : `已加入列表：${item.title}`
-  return id
+  const result = playlist.addTo(playlistId, track)
+  status.value = result.existing
+    ? `「${result.playlistName}」里已有：${item.title}`
+    : `已加入「${result.playlistName}」：${item.title}`
 }
 
 async function onPlay(item: MediaSearchItem): Promise<void> {
-  await playlist.play(onAdd(item))
+  const track = trackFromSearch(item)
+  playlist.addTo(playlist.activeId, track)
+  status.value = `正在播放：${item.title}`
+  await playlist.playFrom(playlist.activeId, track.id)
+}
+
+async function onImport(): Promise<void> {
+  if (transferring.value) return
+  transferring.value = true
+  transfer.value = ''
+  try {
+    const result = await playlist.importFromFile()
+    if (result.message) transfer.value = result.message
+  } finally {
+    transferring.value = false
+  }
+}
+
+async function onExport(): Promise<void> {
+  if (transferring.value) return
+  transferring.value = true
+  transfer.value = ''
+  try {
+    const result = await playlist.exportToFile()
+    if (result.message) transfer.value = result.message
+  } finally {
+    transferring.value = false
+  }
 }
 </script>
 
@@ -38,22 +77,43 @@ async function onPlay(item: MediaSearchItem): Promise<void> {
       <h1>搜视频 · 找链接 · 直接听</h1>
       <p>
         输入歌曲名 / 歌手 / 专辑，同时搜索 B站 和 YouTube；也可以切换为视频链接模式。
-        点「加入列表」收藏到当前播放队列，点「立即播放」加入列表并开始播放，播完自动接下一首。
+        点「加入列表」可以选目标列表，点「立即播放」加入当前列表并开始播放，播完自动接下一首。
       </p>
     </header>
 
-    <VideoSearch @play="onPlay" @add="onAdd" @dock-resize="searchDockHeight = $event" />
+    <VideoSearch
+      :playlists="playlistOptions"
+      @play="onPlay"
+      @add="onAdd"
+      @dock-resize="searchDockHeight = $event"
+    />
 
     <p class="hint" role="status">{{ status }}</p>
     <p v-if="playlist.storageError" class="hint" role="status">{{ playlist.storageError }}</p>
+    <p v-if="transfer" class="hint" role="status">{{ transfer }}</p>
+
+    <PlaylistBar
+      :playlists="playlist.playlists"
+      :active-id="playlist.activeId"
+      :player-id="playlist.playerListId"
+      :busy="playlist.state.status === 'resolving'"
+      :transfer-busy="transferring"
+      @select="playlist.activate($event)"
+      @create="playlist.create()"
+      @rename="(id, name) => playlist.rename(id, name)"
+      @remove="playlist.removePlaylist($event)"
+      @import="onImport"
+      @export="onExport"
+    />
 
     <Playlist
-      :items="playlist.state.items"
-      :current-id="playlist.state.currentId"
-      :busy="playlist.state.status === 'resolving'"
-      @play="playlist.play($event)"
-      @remove="playlist.remove($event)"
-      @clear="playlist.clear()"
+      :title="playlist.active.name"
+      :items="playlist.activeItems"
+      :current-id="playlist.activeCurrentId"
+      :busy="playlist.activeId === playlist.playerListId && playlist.state.status === 'resolving'"
+      @play="playlist.playFrom(playlist.activeId, $event)"
+      @remove="playlist.removeTrack($event)"
+      @clear="playlist.clearActive()"
     />
   </main>
 </template>
@@ -106,5 +166,4 @@ async function onPlay(item: MediaSearchItem): Promise<void> {
   user-select: text;
   word-break: break-word;
 }
-
 </style>

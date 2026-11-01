@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { searchSongVideos, songKeyword } from '@/search/songVideoSearch'
 import AppHeader from './AppHeader.vue'
 import { SEARCH_SOURCES, sourcesForMode, type SearchSource } from '@/search/hostSources'
 import { resolveVideoLink } from '@/search/videoLink'
 import type { SearchModeKey } from '@/search/modes'
+import type { PlaylistOption } from '@/playlist/library'
 import {
   host,
   hostBridge,
@@ -32,16 +33,19 @@ import {
 interface Props {
   /** 每个站点最多返回几条（1~30，宿主侧也会夹紧） */
   limit?: number
+  /** 可加入的播放列表；为空时只能新建 */
+  playlists?: readonly PlaylistOption[]
 }
 
-const props = withDefaults(defineProps<Props>(), { limit: 6 })
+const props = withDefaults(defineProps<Props>(), { limit: 6, playlists: () => [] })
 
 const emit = defineEmits<{
   /** 每个站点完成时返回实际视频链接；可由父页面保存或加入列表。 */
   result: [result: MediaSearchResult]
   /** 用户点了「立即播放」，参数是选中那条视频 */
   play: [item: MediaSearchItem]
-  add: [item: MediaSearchItem]
+  /** 加入列表：第二个参数是目标列表 id；null 表示「新建一个列表并加入」 */
+  add: [item: MediaSearchItem, playlistId: string | null]
   dockResize: [height: number]
 }>()
 
@@ -148,7 +152,14 @@ async function search(): Promise<void> {
   )
 }
 
-onBeforeUnmount(() => { requestSeq.value += 1; linkSequence += 1 })
+onBeforeUnmount(() => {
+  requestSeq.value += 1
+  linkSequence += 1
+  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+  document.removeEventListener('keydown', onDocumentKeydown)
+  document.removeEventListener('scroll', onViewportChange, true)
+  window.removeEventListener('resize', onViewportChange)
+})
 defineExpose({ search, clear })
 
 function clear(): void {
@@ -170,6 +181,61 @@ function clear(): void {
 function openItem(item: MediaSearchItem): void {
   void host.openExternalUrl(item.url)
 }
+
+// ── 「加入列表」时选择目标列表的浮层 ──────────────────────────────────
+const addMenu = ref<{ item: MediaSearchItem } | null>(null)
+const addMenuEl = ref<HTMLElement | null>(null)
+const addMenuStyle = ref<{ left: string; top: string; visibility: 'hidden' | 'visible' }>({
+  left: '0px',
+  top: '0px',
+  visibility: 'hidden',
+})
+
+async function openAddMenu(item: MediaSearchItem, event: MouseEvent): Promise<void> {
+  const anchor = (event.currentTarget as HTMLElement | null)?.getBoundingClientRect()
+  if (!anchor) return
+  addMenuStyle.value = { left: `${Math.round(anchor.left)}px`, top: `${Math.round(anchor.bottom + 6)}px`, visibility: 'hidden' }
+  addMenu.value = { item }
+  await nextTick()
+  const box = addMenuEl.value?.getBoundingClientRect()
+  if (!box) return
+  const left = Math.min(Math.max(8, anchor.left), Math.max(8, window.innerWidth - box.width - 8))
+  const top = Math.min(Math.max(8, anchor.bottom + 6), Math.max(8, window.innerHeight - box.height - 8))
+  addMenuStyle.value = { left: `${Math.round(left)}px`, top: `${Math.round(top)}px`, visibility: 'visible' }
+}
+
+function chooseTarget(playlistId: string | null): void {
+  const current = addMenu.value
+  if (!current) return
+  addMenu.value = null
+  emit('add', current.item, playlistId)
+}
+
+function onDocumentPointerDown(event: PointerEvent): void {
+  if (!addMenu.value) return
+  const target = event.target
+  if (target instanceof Node && addMenuEl.value?.contains(target)) return
+  if (target instanceof Element && target.closest('.vs-add')) return
+  addMenu.value = null
+}
+
+function onDocumentKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Escape' || !addMenu.value) return
+  event.preventDefault()
+  addMenu.value = null
+}
+
+/** 页面滚动 / 缩放后锚点会跑偏，直接收起浮层 */
+function onViewportChange(): void {
+  if (addMenu.value) addMenu.value = null
+}
+
+onMounted(() => {
+  document.addEventListener('pointerdown', onDocumentPointerDown, true)
+  document.addEventListener('keydown', onDocumentKeydown)
+  document.addEventListener('scroll', onViewportChange, true)
+  window.addEventListener('resize', onViewportChange)
+})
 
 async function copyItem(item: MediaSearchItem): Promise<void> {
   const ok = await copyText(item.url)
@@ -271,7 +337,7 @@ function panelFallback(panel: Panel): string {
         <p class="vs-state">{{ linkItem.url }}</p>
         <div class="vs-item-actions">
           <button type="button" class="vs-play" @click="emit('play', linkItem)">立即播放</button>
-          <button type="button" @click="emit('add', linkItem)">加入列表</button>
+          <button type="button" class="vs-add" @click="openAddMenu(linkItem, $event)">加入列表</button>
           <button type="button" @click="openItem(linkItem)">打开</button>
         </div>
       </section>
@@ -358,7 +424,7 @@ function panelFallback(panel: Panel): string {
               </p>
               <div class="vs-item-actions">
                 <button type="button" class="vs-play" @click="emit('play', item)">立即播放</button>
-                <button type="button" @click="emit('add', item)">加入列表</button>
+                <button type="button" class="vs-add" @click="openAddMenu(item, $event)">加入列表</button>
                 <button type="button" @click="openItem(item)">打开</button>
                 <button type="button" @click="copyItem(item)">
                   {{ copiedUrl === item.url ? '已复制' : '复制链接' }}
@@ -370,6 +436,35 @@ function panelFallback(panel: Panel): string {
       </section>
     </div>
   </section>
+
+  <!-- 加入列表：选择目标列表的浮层（teleport 到 body，避免被列表裁剪） -->
+  <Teleport to="body">
+    <div
+      v-if="addMenu"
+      ref="addMenuEl"
+      class="add-menu"
+      :style="addMenuStyle"
+      role="menu"
+      aria-label="选择播放列表"
+    >
+      <p class="add-menu-title">加入播放列表</p>
+      <button
+        v-for="option in playlists"
+        :key="option.id"
+        type="button"
+        role="menuitem"
+        class="add-menu-item"
+        @click="chooseTarget(option.id)"
+      >
+        <span class="add-menu-name">{{ option.name }}</span>
+        <span class="add-menu-meta">{{ option.count }} 首<template v-if="option.active"> · 选中</template></span>
+      </button>
+      <p v-if="!playlists.length" class="add-menu-empty">还没有播放列表</p>
+      <button type="button" role="menuitem" class="add-menu-item add-menu-new" @click="chooseTarget(null)">
+        ＋ 新建列表并加入
+      </button>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>
@@ -381,6 +476,79 @@ function panelFallback(panel: Panel): string {
 
 .vs-link-summary { display: flex; align-items: flex-start; gap: 14px; }
 .vs-link-cover { width: 144px; max-width: 35%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; background: var(--mp-track); }
+
+/* 「加入列表」浮层：跟着按钮定位，超出屏幕时自动收进来 */
+.add-menu {
+  position: fixed;
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 200px;
+  max-width: 280px;
+  max-height: min(360px, 70vh);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--mp-border);
+  border-radius: 12px;
+  background: var(--mp-panel);
+  box-shadow: var(--mp-shadow-lg);
+}
+
+.add-menu-title {
+  margin: 2px 8px 4px;
+  font-size: 11.5px;
+  color: var(--mp-dim);
+}
+
+.add-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  font-size: 12.5px;
+  text-align: left;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--mp-text);
+}
+
+.add-menu-item:hover {
+  background: var(--mp-hover);
+  border-color: transparent;
+  transform: none;
+}
+
+.add-menu-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-menu-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--mp-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.add-menu-new {
+  justify-content: flex-start;
+  color: var(--mp-accent);
+  border-top: 1px solid var(--mp-border);
+  border-radius: 0 0 8px 8px;
+  margin-top: 2px;
+  padding-top: 8px;
+}
+
+.add-menu-empty {
+  margin: 4px 8px 6px;
+  font-size: 11.5px;
+  color: var(--mp-dim);
+}
 
 .vs-head {
   display: flex;

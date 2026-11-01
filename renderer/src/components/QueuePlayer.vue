@@ -3,14 +3,14 @@ import { computed, onBeforeUnmount } from 'vue'
 import AudioPlayer from './AudioPlayer.vue'
 import { usePlaylistStore } from '@/stores/playlist'
 import { createHostMediaController } from '@/playback/hostMediaController'
-import { connectPlaylistPlayback } from '@/playlist/playbackAdapter'
 import type { PlaybackMode } from '@/playlist/playlist'
 import { host, hostBridge } from '@/bridge/host'
 
 // 应用级播放端：路由页面卸载时仍保持同一个控制器。
+// 播放核心只有一个（切列表只换内容），所以这里连接一次即可。
 const playlist = usePlaylistStore()
 const controller = createHostMediaController()
-const disconnect = connectPlaylistPlayback(playlist, controller)
+const disconnect = playlist.connectPlayer(controller)
 const mode = computed({ get: () => playlist.state.mode, set: (value: PlaybackMode) => playlist.setMode(value) })
 // 先读取共享快照以跟踪队列、模式和历史变化，再向核心查询可用操作。
 const canNext = computed(() => playlist.state.items.length > 0 && playlist.canNext())
@@ -30,7 +30,7 @@ onBeforeUnmount(() => { disconnect(); controller.dispose() })
 <template>
   <div v-show="playlist.state.items.length" class="queue-dock">
     <div class="queue-controls">
-      <RouterLink to="/search">播放列表（{{ playlist.state.items.length }}）</RouterLink>
+      <RouterLink to="/search">{{ playlist.playerName }}（{{ playlist.state.items.length }}）</RouterLink>
       <button type="button" :disabled="!hostBridge.ready" @click="host.openLogFolder()">打开日志</button>
       <label>播放模式
         <select v-model="mode" aria-label="播放模式">

@@ -16,8 +16,11 @@ app端/
 │     ├─ App.vue
 │     ├─ router/index.ts       # hash 路由（app:// 与 file:// 下都可靠）
 │     ├─ stores/app.ts         # Pinia 示例 store
+│     ├─ stores/playlist.ts    # 多播放列表仓库（核心 + 列表库 + 导入导出）
 │     ├─ stores/settings.ts    # 设置面板状态
+│     ├─ playlist/             # 播放核心 / 列表库 / 存档 / 播放适配
 │     ├─ search/               # ★ 站点注册表：sourceKeys.ts / sources.ts / modes.ts / hostSources.ts
+│     ├─ components/PlaylistBar.vue    # 列表栏（切换 / 新建 / 重命名 / 删除 / 导入 / 导出）
 │     ├─ components/SettingsDialog.vue # ★ 设置面板（YouTube Cookie）
 │     ├─ bridge/host.ts        # ★ 前端 ↔ C# 桥（类型 + 降级）
 │     └─ views/HomeView.vue    # Hello World 演示页
@@ -89,7 +92,7 @@ const raw = await window.hostApi.getHostInfo()
 - 浏览器里（`pnpm dev:web`）没有宿主，桥接层自动降级成模拟值，页面照常开发。
 - UI 相关调用必须切到 WinForms 线程（`HostApi.OnUiThread`）。
 
-已有方法：`getHostInfo` / `echo` / `minimize` / `toggleMaximize` / `closeWindow` / `openDevTools` / `setZoomLevel` / `openUserDataFolder` / `openLogFolder` / `recordPlaybackLog` / `registerStream` / `searchMedia` / `getVideoInfo` / `resolveMedia` / `openExternalUrl` / `getSettings` / `pickYouTubeCookiesFile` / `checkCookiesFile` / `saveSettings`。
+已有方法：`getHostInfo` / `echo` / `minimize` / `toggleMaximize` / `closeWindow` / `openDevTools` / `setZoomLevel` / `openUserDataFolder` / `openLogFolder` / `recordPlaybackLog` / `registerStream` / `searchMedia` / `getVideoInfo` / `resolveMedia` / `openExternalUrl` / `getSettings` / `pickYouTubeCookiesFile` / `checkCookiesFile` / `saveSettings` / `exportPlaylists` / `importPlaylists`。
 
 ### 新增一个宿主能力
 
@@ -387,23 +390,28 @@ Cookie 是登录凭据，不要上传或提交到仓库；过期后需重新导�
 
 ## 按歌曲信息搜索视频
 
-启动 `pnpm dev` 或构建后 `pnpm start`，在首页点「打开搜索页」（`/#/search`）。歌曲名必填，作者和专辑可选；两个平台各自显示结果，默认各 6 条，支持打开、复制视频链接。搜索只获取视频信息，点击「立即播放」才会解析并在线接收音频，点击「加入列表」仅保存来源。
+启动 `pnpm dev` 或构建后 `pnpm start`，在首页点「打开搜索页」（`/#/search`）。歌曲名必填，作者和专辑可选；两个平台各自显示结果，默认各 6 条，支持打开、复制视频链接。搜索只获取视频信息，点击「立即播放」才会解析并在线接收音频，点击「加入列表」会让你选择加到哪个播放列表（也可以现场新建一个）。
 
-可复用组件在 `renderer/src/components/VideoSearch.vue`，父页面通过 `result` 事件接收每个平台的结果：
+可复用组件在 `renderer/src/components/VideoSearch.vue`，父页面通过 `result` 事件接收每个站点结果，`add` 事件带上用户选的目标列表：
 
 ```vue
 <script setup lang="ts">
 import { ref } from 'vue'
 import VideoSearch from '@/components/VideoSearch.vue'
-import type { MediaSearchResult } from '@/bridge/host'
+import type { MediaSearchItem, MediaSearchResult } from '@/bridge/host'
+import type { PlaylistOption } from '@/playlist/library'
 
 const song = ref('晴天')
 const artist = ref('周杰伦')
 const album = ref('叶惠美')
+const playlists = ref<PlaylistOption[]>([])
 const links = ref<Record<string, string[]>>({})
 
 function receive(result: MediaSearchResult) {
   links.value[result.source] = result.items.map(item => item.url)
+}
+function add(item: MediaSearchItem, playlistId: string | null) {
+  // playlistId 为 null 表示用户点了「新建列表并加入」
 }
 </script>
 
@@ -413,12 +421,14 @@ function receive(result: MediaSearchResult) {
     v-model:artist="artist"
     v-model:album="album"
     :limit="6"
+    :playlists="playlists"
     @result="receive"
+    @add="add"
   />
 </template>
 ```
 
-`result` 的结构为 `{ ok, source, keyword, items, error }`。`items` 包含 `id`、`title`、`author`（UP 主或频道名）、`url`（视频页链接）、`thumbnail`、`duration`（秒）、`playCount`；每个站点结束时分别触发一次。组件也通过模板 ref 暴露 `search()` 和 `clear()`；清空或卸载组件会忽略旧请求的结果。
+`result` 的结构为 `{ ok, source, keyword, items, error }`。`items` 包含 `id`、`title`、`author`（UP 主或频道名）、`url`（视频页链接）、`thumbnail`、`duration`（秒）、`playCount`；每个站点结束时分别触发一次。`play` 事件返回用户点了「立即播放」的条目。组件也通过模板 ref 暴露 `search()` 和 `clear()`；清空或卸载组件会忽略旧请求的结果，并关掉「加入列表」浮层。
 
 仅调用搜索逻辑可使用 `renderer/src/search/songVideoSearch.ts` 的 `searchSongVideos`，传入歌曲信息和站点列表即可，无需渲染组件：
 
@@ -458,6 +468,37 @@ dotnet run --project tools/media-search-check -- --resolve-bili https://www.bili
 
 2026-10-28 用「晴天 周杰伦 叶惠美」实测，两站均返回 3 条视频链接，YouTube 包含官方 MV。搜索结果受关键词和平台排序影响，不保证是原曲或官方版本。
 
+## 多播放列表与导入导出
+
+搜索页顶部是**列表栏**（[`PlaylistBar.vue`](renderer/src/components/PlaylistBar.vue)）：
+
+- 点标签切换当前列表；`＋ 新建列表` 新建并切过去；当前标签上的 `✎` 重命名（回车提交、Esc 取消）、`✕` 删除（点一次变成「删除「XX」？」再确认；只剩一个列表时不给删）。
+- 每个标签显示条目数；右侧「导入 / 导出」做整库备份与恢复。
+- 搜索结果的「加入列表」会弹出目标列表菜单，可选任意列表，或「＋ 新建列表并加入」（新建不会停掉正在播的歌）。同一首再次加入只补全标题/作者/封面，不会重复；「立即播放」= 加进当前列表并播放。
+
+**选中列表和播放队列是两件事，互不影响**：
+
+- 切换列表（点标签、新建列表）只改变"正在浏览/编辑"的列表，**正在播放的歌继续播放**，底部播放条还是原来那个列表。
+- 只有在新列表里点某首歌的「播放」、或搜索页「立即播放」，才会切换播放队列：先停掉当前音频，把目标列表灌进播放核心再开播。
+- 底部播放条显示的是**播放队列**的列表名；标签上的 `♪` 标出哪个列表是当前播放队列，选中态是另一个高亮。
+- 每个列表记住自己的播放模式、当前曲目和最近播放记录；没在播放的列表不显示"当前曲目"。
+- 对正在播放的列表增删改走播放器（保证队列一致），对其它列表的增删改只改存档；删除正在播放的列表会停掉播放，播放队列落到剩下的列表上。
+
+实现上只有一个播放核心（[`playlist.ts`](renderer/src/playlist/playlist.ts)）+ 一份列表库（[`library.ts`](renderer/src/playlist/library.ts)）：核心状态只写回**播放队列**对应的记录，所以浏览别的列表不会把 A 的歌写进 B；`playFrom(listId, trackId?)` 是唯一会切换播放队列的入口。
+
+**存档**：
+
+| 项 | 说明 |
+| --- | --- |
+| 存储位置 | CEF profile 的 localStorage，key `music-player.playlists.v2`（随用户数据目录走） |
+| 旧版升级 | 旧的单列表 `music-player.playlist.v1` 首次启动时升级成「我的音乐」，旧键保留不销毁 |
+| 导出 | 系统保存框写 JSON 文件（UTF-8 无 BOM，文件名带时间戳），`HostApi.ExportPlaylists` |
+| 导入 | 系统打开框读回文本，前端校验后**合并**进当前库：保留已有列表，新列表重新生成 id，同名自动追加「 2」 |
+| 兼容格式 | 本程序导出的整库、旧版单列表存档、只有 `items` 的裸列表对象；坏 JSON / 空列表 / 未知格式会明确报错 |
+| 校验 | 坏条目、重复 id、`File` / `blob:` / `stream:` 临时地址丢弃；`currentId` 必须存在，历史末尾对应当前项 |
+
+相关代码：[`playlist/library.ts`](renderer/src/playlist/library.ts)（数据层与校验）、[`playlist/persistence.ts`](renderer/src/playlist/persistence.ts)（存储与升级）、[`stores/playlist.ts`](renderer/src/stores/playlist.ts)（列表管理、加入、导入导出）。单元测试见 `renderer/tests/library.test.mjs`、`playlistPersistence.test.mjs`。
+
 ## 数据目录（CEF profile / 缓存 / localStorage）
 
 默认在 **`D:\MusicPlayerData`**，也可以改到任意盘。优先级从高到低：
@@ -477,6 +518,7 @@ dotnet run --project tools/media-search-check -- --resolve-bili https://www.bili
 
 - 想搬走已有数据：先关掉应用，把旧目录整个拷到新位置，再用上面的方式指过去即可（缓存可以不清，CEF 会自己校验）。从旧版升级过来时，把 `%LOCALAPPDATA%\MusicPlayer\ver2` 里的内容拷进 `D:\MusicPlayerData` 即可延续登录态。
 - 界面设置（目前是 YouTube Cookie 文件和浏览器）存在目录里的 `settings.json`，与 CEF 缓存、`logs` 诊断日志放在一起；删掉它即回到「未配置」，拷到别的机器也能带走。
+- 播放列表存在同一目录里 CEF profile 的 localStorage（换目录 / 清站点数据会丢），跨机器搬家用搜索页的「导出 / 导入」。
 - 注意事项：路径含中文没问题（已实测 `D:\code\项目\音乐播放器\...` 可用）；不要指向网络盘 / OneDrive 同步目录 / 只读盘，CEF 对缓存目录的写入要求较高，容易启动失败。目录不可写时会弹出带完整路径的中文错误提示，而不是 CEF 内部的报错。
 
 ## 为播放器预留的配置

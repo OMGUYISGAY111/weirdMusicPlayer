@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
 using CefSharp;
@@ -189,6 +190,149 @@ internal sealed class HostApi
         expiredCount = info.ExpiredCount,
         note = info.Note,
     };
+
+    /// <summary>把整库播放列表 JSON 导出到用户选的文件（UTF-8 无 BOM）。</summary>
+    public string ExportPlaylists(string json)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return JsonSerializer.Serialize(
+                    new { ok = false, canceled = false, path = string.Empty, error = "没有可导出的播放列表" }, JsonOptions);
+            }
+
+            var path = ShowPlaylistFileDialog(save: true);
+            if (path is null)
+            {
+                return JsonSerializer.Serialize(
+                    new { ok = true, canceled = true, path = string.Empty, error = string.Empty }, JsonOptions);
+            }
+
+            File.WriteAllText(path, json, new UTF8Encoding(false));
+            PlaybackLog.Write("playlist", "exported", new { path, chars = json.Length });
+            return JsonSerializer.Serialize(
+                new { ok = true, canceled = false, path, error = string.Empty }, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            PlaybackLog.Exception("playlist", "export_failed", ex);
+            return JsonSerializer.Serialize(
+                new { ok = false, canceled = false, path = string.Empty, error = ex.Message }, JsonOptions);
+        }
+    }
+
+    /// <summary>
+    /// 选择播放列表文件并读回文本（解析和校验在前端完成，宿主只负责文件 IO）。
+    /// 返回 JSON：{ ok, canceled, path, fileName, text, error }
+    /// </summary>
+    public string ImportPlaylists()
+    {
+        const long maxBytes = 8 * 1024 * 1024;
+        try
+        {
+            var path = ShowPlaylistFileDialog(save: false);
+            if (path is null)
+            {
+                return JsonSerializer.Serialize(
+                    new { ok = true, canceled = true, path = string.Empty, fileName = string.Empty, text = string.Empty, error = string.Empty },
+                    JsonOptions);
+            }
+
+            var info = new FileInfo(path);
+            if (info.Length > maxBytes)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    ok = false, canceled = false, path, fileName = info.Name, text = string.Empty,
+                    error = $"文件太大（{info.Length / 1024 / 1024} MB），播放列表文件一般只有几十 KB。",
+                }, JsonOptions);
+            }
+
+            var text = File.ReadAllText(path, Encoding.UTF8);
+            PlaybackLog.Write("playlist", "imported", new { path, chars = text.Length });
+            return JsonSerializer.Serialize(
+                new { ok = true, canceled = false, path, fileName = info.Name, text, error = string.Empty }, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            PlaybackLog.Exception("playlist", "import_failed", ex);
+            return JsonSerializer.Serialize(new
+            {
+                ok = false, canceled = false, path = string.Empty, fileName = string.Empty, text = string.Empty,
+                error = ex.Message,
+            }, JsonOptions);
+        }
+    }
+
+    /// <summary>导出用保存框、导入用打开框；必须在 UI 线程弹。</summary>
+    private string? ShowPlaylistFileDialog(bool save)
+    {
+        if (_form.IsDisposed)
+        {
+            return null;
+        }
+
+        string? selected = null;
+        var initialDirectory = PlayerSettings.DataDirectory is { Length: > 0 } dir && Directory.Exists(dir) ? dir : null;
+
+        void Show()
+        {
+            if (save)
+            {
+                using var dialog = new SaveFileDialog
+                {
+                    Title = "导出播放列表",
+                    Filter = "播放列表 (*.json)|*.json|所有文件 (*.*)|*.*",
+                    FileName = $"音乐播放器-播放列表-{DateTime.Now:yyyyMMdd-HHmm}.json",
+                    DefaultExt = "json",
+                    AddExtension = true,
+                    OverwritePrompt = true,
+                    RestoreDirectory = true,
+                };
+                if (initialDirectory != null)
+                {
+                    dialog.InitialDirectory = initialDirectory;
+                }
+
+                if (dialog.ShowDialog(_form) == DialogResult.OK)
+                {
+                    selected = dialog.FileName;
+                }
+
+                return;
+            }
+
+            using var open = new OpenFileDialog
+            {
+                Title = "导入播放列表",
+                Filter = "播放列表 (*.json;*.txt)|*.json;*.txt|所有文件 (*.*)|*.*",
+                CheckFileExists = true,
+                Multiselect = false,
+                RestoreDirectory = true,
+            };
+            if (initialDirectory != null)
+            {
+                open.InitialDirectory = initialDirectory;
+            }
+
+            if (open.ShowDialog(_form) == DialogResult.OK)
+            {
+                selected = open.FileName;
+            }
+        }
+
+        if (_form.InvokeRequired)
+        {
+            _form.Invoke((Action)Show);
+        }
+        else
+        {
+            Show();
+        }
+
+        return selected;
+    }
 
     /// <summary>OpenFileDialog 必须跑在 UI 线程；CEF 的 JS 调用线程要 Invoke 回来。</summary>
     private string? ShowCookiesFileDialog()

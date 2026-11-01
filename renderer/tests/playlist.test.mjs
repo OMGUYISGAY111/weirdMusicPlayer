@@ -430,3 +430,42 @@ test('暂停会取消排队中的自动重试', async () => {
     mock.timers.reset()
   }
 })
+
+test('切列表（replace）：停掉当前播放和自动重试，换上新的条目、当前曲目、模式和历史', async () => {
+  const { queue, loads } = setup()
+  queue.add(track('a')); queue.add(track('b'))
+  await queue.play('a')
+  queue.fail('流断了')
+  assert.ok(queue.snapshot().autoRetryIn > 0)
+
+  queue.replace({
+    items: [{ id: 'x', title: 'X', source: { kind: 'audio', url: 'x.mp3' } }],
+    currentId: 'x',
+    mode: 'repeat-one',
+    history: ['x'],
+  })
+
+  assert.deepEqual(queue.snapshot().items.map((item) => item.id), ['x'])
+  assert.equal(queue.snapshot().currentId, 'x')
+  assert.equal(queue.snapshot().mode, 'repeat-one')
+  assert.deepEqual(queue.snapshot().history, ['x'])
+  assert.equal(queue.snapshot().status, 'paused') // 记住当前曲目，但等用户点播放
+  assert.equal(queue.snapshot().autoRetryIn, 0)
+  assert.equal(queue.snapshot().source, null)
+  // 换列表要清空播放器，避免旧音频继续响
+  assert.deepEqual(loads.at(-1), {})
+
+  mock.timers.enable({ apis: ['setInterval'] })
+  try {
+    mock.timers.tick(60000)
+    await flush()
+    assert.equal(queue.snapshot().status, 'paused') // 旧的自动重试已被取消
+  } finally {
+    mock.timers.reset()
+  }
+
+  // 空列表切换后回到 idle
+  queue.replace({ items: [], currentId: null, mode: 'sequential', history: [] })
+  assert.equal(queue.snapshot().status, 'idle')
+})
+

@@ -68,6 +68,10 @@ export interface CefHostApi {
   checkCookiesFile(path: string): Promise<string>
   /** 保存设置（JSON 字符串），返回 { ok, error, warning, settings } */
   saveSettings(json: string): Promise<string>
+  /** 把整库播放列表写到用户选的文件，返回 { ok, canceled, path, error } */
+  exportPlaylists(json: string): Promise<string>
+  /** 选播放列表文件并读回文本，返回 { ok, canceled, path, fileName, text, error } */
+  importPlaylists(): Promise<string>
 }
 
 /** 搜索来源：键表在 search/sourceKeys.ts（加站点只改那一处） */
@@ -178,6 +182,20 @@ export interface PickCookiesFileResult {
   ok: boolean
   path: string
   error: string
+}
+
+/** 导出播放列表的结果；canceled 为 true 表示用户取消了保存框 */
+export interface PlaylistExportResult {
+  ok: boolean
+  canceled: boolean
+  path: string
+  error: string
+}
+
+/** 导入播放列表的结果；text 是文件原文，解析在前端完成 */
+export interface PlaylistImportResult extends PlaylistExportResult {
+  fileName: string
+  text: string
 }
 
 /** 音轨解析结果（B站 / YouTube 等站点共用；bvid 字段沿用旧命名，放站点侧的视频 ID） */
@@ -470,6 +488,33 @@ export const host = {
       return JSON.parse(raw) as SaveSettingsResult
     } catch (error) {
       return { ok: false, error: String(error), warning: '', settings: null }
+    }
+  },
+
+  /** 导出播放列表：宿子弹保存框并写文件 */
+  async exportPlaylists(json: string): Promise<PlaylistExportResult> {
+    const empty: PlaylistExportResult = { ok: false, canceled: false, path: '', error: '浏览器预览模式没有宿主，无法保存文件' }
+    const raw = await invoke<string | null>((api) => api.exportPlaylists(json), null)
+    if (!raw) return empty
+    try {
+      return JSON.parse(raw) as PlaylistExportResult
+    } catch (error) {
+      return { ...empty, error: String(error) }
+    }
+  },
+
+  /** 导入播放列表：宿子弹文件框并读回原文，解析在前端 */
+  async importPlaylists(): Promise<PlaylistImportResult> {
+    const empty: PlaylistImportResult = {
+      ok: false, canceled: false, path: '', fileName: '', text: '',
+      error: '浏览器预览模式没有宿主，无法读取本地文件',
+    }
+    const raw = await invoke<string | null>((api) => api.importPlaylists(), null)
+    if (!raw) return empty
+    try {
+      return JSON.parse(raw) as PlaylistImportResult
+    } catch (error) {
+      return { ...empty, error: String(error) }
     }
   },
 }

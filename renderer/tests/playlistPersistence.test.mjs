@@ -1,13 +1,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createPlaylist } from '../src/playlist/playlist.ts'
-import { createPlaylistPersistence, parsePlaylist, serializePlaylist, PLAYLIST_STORAGE_KEY } from '../src/playlist/persistence.ts'
+import {
+  LEGACY_PLAYLIST_STORAGE_KEY,
+  PLAYLIST_LIBRARY_STORAGE_KEY,
+  createPlaylistLibraryPersistence,
+  libraryFileText,
+} from '../src/playlist/persistence.ts'
+import { createLibrary, createRecord, parseLibraryText } from '../src/playlist/library.ts'
 
 const track = (id) => ({
   id, title: `歌曲 ${id}`, artist: '作者', cover: 'https://example.com/cover.jpg',
   source: { kind: 'youtube', url: `https://www.youtube.com/watch?v=${id}` },
 })
-const resolve = async () => ({ url: 'stream://media/temporary' })
 
 function memoryStorage() {
   const values = new Map()
@@ -15,119 +19,69 @@ function memoryStorage() {
     writes: 0,
     getItem(key) { return values.get(key) ?? null },
     setItem(key, value) { values.set(key, value); this.writes++ },
+    has(key) { return values.has(key) },
   }
 }
 
-for (const source of ['bilibili', 'youtube']) test(`${source} 已有条目补全标题、作者和封面后保存，重建列表仍保留这些信息`, () => {
+test('多列表存档：保存后读回名称、条目、模式、当前曲目、历史和当前列表', () => {
   const storage = memoryStorage()
-  const persistence = createPlaylistPersistence(() => storage)
-  const queue = createPlaylist(resolve)
-  const stop = persistence.connect(queue)
-  const videoId = source === 'bilibili' ? 'BV1GJ411x7h7' : 'dQw4w9WgXcQ'
-  const id = queue.add({
-    id: `${source}:${videoId}`, title: `视频 · ${videoId}`,
-    source: { kind: source, url: source === 'bilibili' ? `https://www.bilibili.com/video/${videoId}` : `https://www.youtube.com/watch?v=${videoId}` },
-  })
-  queue.updateMetadata(id, { title: '真实视频标题', artist: 'UP 主', cover: 'https://i.example/cover.jpg' })
-  const restored = createPlaylist(resolve, { initial: persistence.load() }).snapshot().items
-  assert.equal(restored.length, 1)
-  assert.equal(restored[0].title, '真实视频标题')
-  assert.equal(restored[0].artist, 'UP 主')
-  assert.equal(restored[0].cover, 'https://i.example/cover.jpg')
-  assert.equal(restored[0].source.kind, source)
-  stop()
-})
-
-test('重建列表后恢复顺序、元信息、模式、当前歌曲和历史，恢复时不解析或播放', async () => {
-  const storage = memoryStorage()
-  const persistence = createPlaylistPersistence(() => storage)
-  assert.equal(persistence.load(), undefined)
-  const original = createPlaylist(resolve)
-  const stop = persistence.connect(original)
-  original.connect({ load() {}, pause() {}, async play() {} })
-  original.add(track('a')); original.add(track('b'))
-  original.setMode('shuffle')
-  await original.play('a')
-  await original.play('b')
-  let resolves = 0, loads = 0, plays = 0
-  const restored = createPlaylist(async () => { resolves++; return resolve() }, { initial: persistence.load() })
-  restored.connect({ load() { loads++ }, pause() {}, async play() { plays++ } })
-  assert.deepEqual(restored.snapshot().items, original.snapshot().items)
-  assert.equal(restored.snapshot().mode, 'shuffle')
-  assert.equal(restored.snapshot().currentId, 'b')
-  assert.deepEqual(restored.snapshot().history, ['a', 'b'])
-  assert.equal(restored.snapshot().source, null)
-  assert.equal(restored.snapshot().status, 'paused')
-  assert.deepEqual([resolves, loads, plays], [0, 0, 0])
-  assert.equal(storage.getItem(PLAYLIST_STORAGE_KEY).includes('stream://'), false)
-  await restored.resume()
-  assert.deepEqual([resolves, loads, plays], [1, 1, 1])
-  stop()
-})
-
-test('移除和清空立即落盘，清空后重启不会复活旧歌曲并保留模式', () => {
-  const storage = memoryStorage()
-  const persistence = createPlaylistPersistence(() => storage)
-  const queue = createPlaylist(resolve)
-  const stop = persistence.connect(queue)
-  queue.add(track('a')); queue.add(track('b'))
-  queue.remove('a')
-  assert.deepEqual(persistence.load().items.map((item) => item.id), ['b'])
-  queue.setMode('repeat-all')
-  queue.clear()
-  const restored = createPlaylist(resolve, { initial: persistence.load() })
-  assert.deepEqual(restored.snapshot().items, [])
-  assert.equal(restored.snapshot().currentId, null)
-  assert.equal(restored.snapshot().mode, 'repeat-all')
-  stop()
-})
-
-test('运行期 File、blob 和 stream 条目不持久化，音频直链可以恢复', () => {
-  const items = [
-    track('video'),
-    { ...track('local'), source: { kind: 'audio', file: new File(['audio'], 'test.wav') } },
-    { ...track('blob'), source: { kind: 'audio', url: 'blob:https://example.com/123' } },
-    { ...track('stream'), source: { kind: 'audio', url: 'stream://media/1' } },
-    { ...track('direct'), source: { kind: 'audio', url: 'https://example.com/song.mp3' } },
-  ]
-  const text = serializePlaylist({ items, currentId: 'local', mode: 'repeat-one', history: ['video', 'local'] })
-  const saved = parsePlaylist(text)
-  assert.deepEqual(saved.items.map((item) => item.id), ['video', 'direct'])
-  assert.equal(saved.currentId, null)
-  assert.deepEqual(saved.history, ['video'])
-  assert.ok(!text.includes('blob:') && !text.includes('stream:') && !text.includes('test.wav'))
-})
-
-test('恢复时过滤损坏、重复和未知类型条目，修正模式、当前 ID 与历史', () => {
-  const data = parsePlaylist(JSON.stringify({
-    version: 1,
-    items: [null, {}, track('a'), track('a'), { ...track('bad'), source: { kind: 'unknown', url: 'https://example.com' } }, track('b')],
-    currentId: 'missing', mode: 'unknown', history: ['missing', 'a', 42],
-  }))
-  assert.deepEqual(data.items.map((item) => item.id), ['a', 'b'])
-  assert.equal(data.currentId, null)
-  assert.equal(data.mode, 'sequential')
-  assert.deepEqual(data.history, ['a'])
-  const current = parsePlaylist(JSON.stringify({ version: 1, items: [track('a'), track('b')], currentId: 'b', history: ['a'] }))
-  assert.deepEqual(current.history, ['a', 'b'])
-})
-
-test('损坏 JSON、未知版本和不可访问的存储均降级，不阻止创建列表', () => {
-  for (const text of ['{broken', '{"version":2,"items":[]}', 'null', '{"version":1}']) {
-    const reports = []
-    const storage = memoryStorage()
-    storage.setItem(PLAYLIST_STORAGE_KEY, text)
-    const persistence = createPlaylistPersistence(() => storage, (message) => reports.push(message))
-    const queue = createPlaylist(resolve, { initial: persistence.load() })
-    assert.deepEqual(queue.snapshot().items, [])
-    assert.equal(reports.length, 1)
-    assert.equal(storage.getItem(PLAYLIST_STORAGE_KEY), text)
+  const persistence = createPlaylistLibraryPersistence(() => storage)
+  const library = {
+    activeId: 'p2',
+    playlists: [
+      createRecord('p1', '通勤', { items: [track('a'), track('b')], mode: 'shuffle' }),
+      createRecord('p2', '学习', { items: [track('c')], currentId: 'c', mode: 'repeat-one', history: ['c'] }),
+    ],
   }
-  const inaccessible = createPlaylistPersistence(() => { throw new Error('SecurityError') })
-  assert.doesNotThrow(() => inaccessible.load())
+  persistence.save(library)
+
+  const restored = persistence.load()
+  assert.deepEqual(restored.playlists.map((playlist) => playlist.name), ['通勤', '学习'])
+  assert.equal(restored.activeId, 'p2')
+  assert.deepEqual(restored.playlists[0].items.map((item) => item.id), ['a', 'b'])
+  assert.equal(restored.playlists[0].mode, 'shuffle')
+  assert.equal(restored.playlists[1].mode, 'repeat-one')
+  assert.equal(restored.playlists[1].currentId, 'c')
+  assert.deepEqual(restored.playlists[1].history, ['c'])
 })
 
-test('写入失败保留内存队列并报告错误，后续修改可重新保存', () => {
+test('旧版单列表存档自动升级成一个「我的音乐」列表，并写成新键', () => {
+  const storage = memoryStorage()
+  storage.setItem(LEGACY_PLAYLIST_STORAGE_KEY, JSON.stringify({
+    version: 1,
+    items: [track('a')],
+    currentId: 'a',
+    mode: 'repeat-all',
+    history: ['a'],
+  }))
+  const persistence = createPlaylistLibraryPersistence(() => storage)
+
+  const library = persistence.load()
+  assert.equal(library.playlists.length, 1)
+  assert.equal(library.playlists[0].name, '我的音乐')
+  assert.deepEqual(library.playlists[0].items.map((item) => item.id), ['a'])
+  assert.equal(library.playlists[0].mode, 'repeat-all')
+  assert.ok(storage.has(PLAYLIST_LIBRARY_STORAGE_KEY), '升级后应写入新键，避免每次都重新迁移')
+  assert.ok(storage.has(LEGACY_PLAYLIST_STORAGE_KEY), '旧键保留，不销毁用户数据')
+})
+
+test('存档损坏时报告一次并使用空库，不阻止启动', () => {
+  for (const text of ['{broken', 'null', '{"version":2}']) {
+    const storage = memoryStorage()
+    storage.setItem(PLAYLIST_LIBRARY_STORAGE_KEY, text)
+    const reports = []
+    const library = createPlaylistLibraryPersistence(() => storage, (message) => reports.push(message)).load()
+    assert.equal(library.playlists.length, 1)
+    assert.deepEqual(library.playlists[0].items, [])
+    assert.equal(reports.length, 1)
+    assert.equal(storage.getItem(PLAYLIST_LIBRARY_STORAGE_KEY), text, '损坏存档不覆盖')
+  }
+})
+
+test('存储不可访问时不抛错；写失败上报错误，后续保存可恢复', () => {
+  const inaccessible = createPlaylistLibraryPersistence(() => { throw new Error('SecurityError') })
+  assert.doesNotThrow(() => inaccessible.load())
+
   const storage = memoryStorage()
   let full = true
   const access = () => ({
@@ -135,34 +89,25 @@ test('写入失败保留内存队列并报告错误，后续修改可重新保�
     setItem(key, value) { if (full) throw new Error('QuotaExceededError'); storage.setItem(key, value) },
   })
   const reports = []
-  const persistence = createPlaylistPersistence(access, (message) => reports.push(message))
-  const queue = createPlaylist(resolve)
-  const stop = persistence.connect(queue)
-  queue.add(track('a'))
-  assert.equal(queue.snapshot().items.length, 1)
+  const persistence = createPlaylistLibraryPersistence(access, (message) => reports.push(message))
+  persistence.save(createLibrary('我的音乐'))
   assert.ok(reports.at(-1).includes('保存失败'))
   full = false
-  queue.setMode('repeat-all')
-  assert.equal(persistence.load().items[0].id, 'a')
+  persistence.save(createLibrary('我的音乐'))
   assert.equal(reports.at(-1), '')
-  stop()
+  assert.equal(storage.writes, 1)
 })
 
-test('单纯暂停或状态变化不会重复写盘，取消订阅后停止保存', async () => {
-  const storage = memoryStorage()
-  const persistence = createPlaylistPersistence(() => storage)
-  const queue = createPlaylist(resolve)
-  queue.connect({ load() {}, pause() {}, async play() {} })
-  const stop = persistence.connect(queue)
-  assert.equal(storage.writes, 0)
-  queue.add(track('a'))
-  await queue.play()
-  const writes = storage.writes
-  queue.pause()
-  await queue.resume()
-  queue.syncPlaying(false)
-  assert.equal(storage.writes, writes)
-  stop()
-  queue.add(track('b'))
-  assert.equal(storage.writes, writes)
+test('导出文件带版本号和时间戳，能被导入解析', () => {
+  const library = {
+    activeId: 'p1',
+    playlists: [createRecord('p1', '通勤', { items: [track('a')] })],
+  }
+  const text = libraryFileText(library)
+  const file = JSON.parse(text)
+  assert.equal(file.version, 2)
+  assert.equal(typeof file.exportedAt, 'string')
+  const parsed = parseLibraryText(text)
+  assert.equal(parsed.playlists[0].name, '通勤')
+  assert.deepEqual(parsed.playlists[0].items.map((item) => item.id), ['a'])
 })

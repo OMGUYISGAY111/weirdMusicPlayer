@@ -274,6 +274,27 @@ export function createPlaylist(
     patch({ items: [], history: [], currentId: null, source: null, status: 'idle', error: '' })
   }
 
+  /**
+   * 切换到另一份列表内容（多播放列表）：停掉当前播放和自动重试，
+   * 换上新的条目 / 当前曲目 / 模式 / 历史；播放端连接保持不变，无需重新 connect。
+   */
+  function replace(data: PlaylistData): void {
+    ++generation
+    retryAt = 0
+    stopAutoRetry(true)
+    player?.pause()
+    player?.load({})
+    patch({
+      items: data.items.map((item) => ({ ...item, source: { ...item.source } })),
+      currentId: data.currentId ?? null,
+      mode: data.mode,
+      history: [...data.history],
+      status: data.currentId ? 'paused' : 'idle',
+      error: '',
+      source: null,
+    })
+  }
+
   /** 停掉自动重试定时器并清空订阅（应用关闭/组件卸载时调用）。 */
   function dispose(): void {
     stopAutoRetry(true)
@@ -316,7 +337,7 @@ export function createPlaylist(
       listeners.add(listener)
       return () => { listeners.delete(listener) }
     },
-    add, updateMetadata, play, pause, resume, next, previous, ended, remove, clear, dispose, connect, fail, syncPlaying,
+    add, updateMetadata, play, pause, resume, next, previous, ended, remove, clear, replace, dispose, connect, fail, syncPlaying,
     setMode, canNext, canPrevious, syncBuffering,
   }
 }

@@ -6,6 +6,8 @@ defineProps<{
   items: readonly PlaylistTrack[]
   currentId: string | null
   busy?: boolean
+  /** 当前播放列表的名字；不传时显示「播放列表」 */
+  title?: string
 }>()
 const emit = defineEmits<{
   play: [id: string]
@@ -23,7 +25,7 @@ function kindLabel(item: PlaylistTrack): string {
 <template>
   <section class="playlist" aria-label="播放列表">
     <header>
-      <h2>播放列表 <small>{{ items.length }} 首</small></h2>
+      <h2>{{ title || '播放列表' }} <small>{{ items.length }} 首</small></h2>
       <button type="button" :disabled="!items.length" @click="emit('clear')">清空列表</button>
     </header>
     <p v-if="!items.length" class="empty">还没有歌曲，可以从搜索结果加入列表。</p>
