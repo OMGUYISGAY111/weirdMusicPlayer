@@ -328,12 +328,26 @@ internal sealed class HostApi
     };
 
     /// <summary>
-    /// 解析 B站 音轨，按实际解码能力选择直接代理或实时转码；不下载音频文件。
+    /// 解析某个站点的音轨（source 为 bilibili / youtube），按实际解码能力选择直接代理或实时转码；
+    /// 不下载音频文件。未知站点返回明确的失败信封，不会被当成 YouTube。
     /// 返回 JSON：{ ok, bvid, title, artist, duration, streamUrl, cached, error }
     /// </summary>
-    public string ResolveBilibili(string url, string supportedTypesJson = "[]")
+    public string ResolveMedia(string source, string url, string supportedTypesJson = "[]")
     {
-        PlaybackLog.Write("resolver", "bilibili_start", new { trackId = BilibiliResolver.ExtractBvid(url) });
+        if (!IsKnownSource(source))
+        {
+            return SerializeResolveFailure($"暂不支持的站点：{source}");
+        }
+
+        return source == "bilibili"
+            ? ResolveBilibiliCore(url, supportedTypesJson)
+            : ResolveYouTubeCore(url, supportedTypesJson);
+    }
+
+    /// <summary>B站：取 DASH 音轨，必要时实时转码</summary>
+    private string ResolveBilibiliCore(string? url, string supportedTypesJson)
+    {
+        PlaybackLog.Write("resolver", "bilibili_start", new { trackId = BilibiliResolver.ExtractBvid(url ?? string.Empty) });
         try
         {
             var track = BilibiliResolver
@@ -341,132 +355,104 @@ internal sealed class HostApi
                 .GetAwaiter()
                 .GetResult();
 
-            var playback = AudioStreamRegistration.Register(track, supportedTypesJson);
-
-            return JsonSerializer.Serialize(new
-            {
-                ok = true,
-                bvid = track.Id,
-                title = track.Title,
-                artist = track.Artist,
-                duration = track.Duration,
-                streamUrl = playback.Url,
-                playbackMode = playback.Mode,
-                cached = false,
-                error = (string?)null,
-            }, JsonOptions);
+            return SerializeResolveSuccess(track, AudioStreamRegistration.Register(track, supportedTypesJson));
         }
         catch (Exception ex)
         {
             PlaybackLog.Exception("resolver", "bilibili_failed", ex);
-            return JsonSerializer.Serialize(new
-            {
-                ok = false,
-                bvid = (string?)null,
-                title = (string?)null,
-                artist = (string?)null,
-                duration = 0d,
-                streamUrl = (string?)null,
-                cached = false,
-                error = ResolveMessage(ex),
-            }, JsonOptions);
+            return SerializeResolveFailure(ResolveMessage(ex));
         }
     }
 
-    /// <summary>
-    /// 解析 YouTube 地址：yt-dlp 仅取流地址，优先直接播放，不兼容时实时转码，
-    /// 返回可直接播的 stream:// 地址。返回 JSON 结构同 ResolveBilibili。
-    /// </summary>
-    public string ResolveYouTube(string url, string supportedTypesJson = "[]")
+    /// <summary>YouTube：yt-dlp 仅取流地址，不下载媒体文件</summary>
+    private string ResolveYouTubeCore(string? url, string supportedTypesJson)
     {
         PlaybackLog.Write("resolver", "youtube_start");
         try
         {
             var proxy = _form.Options.Proxy ?? SystemProxy.Detect();
             var track = YoutubeResolver
-                .ResolveAsync(url ?? string.Empty, proxy, preferOpus: AudioStreamRegistration.SupportedTypes(supportedTypesJson).Contains("audio/webm; codecs=\"opus\""))
+                .ResolveAsync(url ?? string.Empty, proxy,
+                    preferOpus: AudioStreamRegistration.SupportedTypes(supportedTypesJson).Contains("audio/webm; codecs=\"opus\""))
                 .GetAwaiter()
                 .GetResult();
 
-            var playback = AudioStreamRegistration.Register(track, supportedTypesJson);
-
-            return JsonSerializer.Serialize(new
-            {
-                ok = true,
-                bvid = track.Id,
-                title = track.Title,
-                artist = track.Artist,
-                duration = track.Duration,
-                streamUrl = playback.Url,
-                playbackMode = playback.Mode,
-                cached = false,
-                error = (string?)null,
-            }, JsonOptions);
+            return SerializeResolveSuccess(track, AudioStreamRegistration.Register(track, supportedTypesJson));
         }
         catch (Exception ex)
         {
             PlaybackLog.Exception("resolver", "youtube_failed", ex);
-            return JsonSerializer.Serialize(new
-            {
-                ok = false,
-                bvid = (string?)null,
-                title = (string?)null,
-                artist = (string?)null,
-                duration = 0d,
-                streamUrl = (string?)null,
-                cached = false,
-                error = ResolveMessage(ex),
-            }, JsonOptions);
+            return SerializeResolveFailure(ResolveMessage(ex));
+        }
+    }
+
+    private static string SerializeResolveSuccess(RemoteAudioTrack track, (string Url, string Mode) playback) =>
+        JsonSerializer.Serialize(new
+        {
+            ok = true,
+            bvid = track.Id,
+            title = track.Title,
+            artist = track.Artist,
+            duration = track.Duration,
+            streamUrl = playback.Url,
+            playbackMode = playback.Mode,
+            cached = false,
+            error = (string?)null,
+        }, JsonOptions);
+
+    private static string SerializeResolveFailure(string message) => JsonSerializer.Serialize(new
+    {
+        ok = false,
+        bvid = (string?)null,
+        title = (string?)null,
+        artist = (string?)null,
+        duration = 0d,
+        streamUrl = (string?)null,
+        cached = false,
+        error = message,
+    }, JsonOptions);
+
+    /// <summary>
+    /// 读取某个站点的视频信息（标题、封面、作者），不解析音轨。
+    /// 返回 JSON：{ ok, item, error }
+    /// </summary>
+    public string GetVideoInfo(string source, string url)
+    {
+        if (!IsKnownSource(source))
+        {
+            return JsonSerializer.Serialize(
+                new { ok = false, item = (MediaSearchItem?)null, error = $"暂不支持的站点：{source}" }, JsonOptions);
+        }
+
+        try
+        {
+            var item = source == "bilibili"
+                ? BilibiliResolver.GetVideoInfoAsync(url ?? string.Empty).GetAwaiter().GetResult()
+                : YoutubeResolver
+                    .GetVideoInfoAsync(url ?? string.Empty, _form.Options.Proxy ?? SystemProxy.Detect())
+                    .GetAwaiter()
+                    .GetResult();
+            return JsonSerializer.Serialize(new { ok = true, item, error = (string?)null }, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(new { ok = false, item = (MediaSearchItem?)null, error = ex.Message }, JsonOptions);
         }
     }
 
     /// <summary>
-    /// 按关键词搜 B站 视频（关键词由前端把歌名 / 作者 / 专辑拼好后传进来）。
+    /// 按关键词搜某个站点的视频（关键词由前端把歌名 / 作者 / 专辑拼好后传进来）。
     /// 返回 JSON：{ ok, source, keyword, items[], error }
-    /// 阻塞时间约 0.3~2 秒（wbi 签名 + 搜索接口），前端应显示“搜索中”。
     /// </summary>
-    public string SearchBilibili(string keyword, int limit)
+    public string SearchMedia(string source, string keyword, int limit)
     {
-        return Search("bilibili", keyword, limit);
+        return IsKnownSource(source)
+            ? Search(source, keyword, limit)
+            : SerializeSearch(source, (keyword ?? string.Empty).Trim(), Array.Empty<MediaSearchItem>(),
+                $"暂不支持的站点：{source}");
     }
 
-    /// <summary>读取 B站链接的视频信息，供播放列表保存标题和封面。</summary>
-    public string GetBilibiliVideoInfo(string url)
-    {
-        try
-        {
-            var item = BilibiliResolver.GetVideoInfoAsync(url ?? string.Empty).GetAwaiter().GetResult();
-            return JsonSerializer.Serialize(new { ok = true, item, error = (string?)null }, JsonOptions);
-        }
-        catch (Exception ex)
-        {
-            return JsonSerializer.Serialize(new { ok = false, item = (MediaSearchItem?)null, error = ex.Message }, JsonOptions);
-        }
-    }
-
-    /// <summary>读取 YouTube 标题、封面和频道，复用已有的代理和认证配置。</summary>
-    public string GetYouTubeVideoInfo(string url)
-    {
-        try
-        {
-            var item = YoutubeResolver.GetVideoInfoAsync(url ?? string.Empty,
-                _form.Options.Proxy ?? SystemProxy.Detect()).GetAwaiter().GetResult();
-            return JsonSerializer.Serialize(new { ok = true, item, error = (string?)null }, JsonOptions);
-        }
-        catch (Exception ex)
-        {
-            return JsonSerializer.Serialize(new { ok = false, item = (MediaSearchItem?)null, error = ex.Message }, JsonOptions);
-        }
-    }
-
-    /// <summary>
-    /// 按关键词搜 YouTube 视频：yt-dlp 的 ytsearchN + -J --flat-playlist，
-    /// 返回结构同 SearchBilibili。首次通常 3~10 秒（受网络/代理影响）。
-    /// </summary>
-    public string SearchYouTube(string keyword, int limit)
-    {
-        return Search("youtube", keyword, limit);
-    }
+    private static bool IsKnownSource(string? source) => source is "bilibili" or "youtube";
 
     /// <summary>用系统默认浏览器打开外链（B站 / YouTube 视频页）。只放行 http/https，避免被当成启动本地程序。</summary>
     public void OpenExternalUrl(string url)

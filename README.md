@@ -17,6 +17,7 @@ app端/
 │     ├─ router/index.ts       # hash 路由（app:// 与 file:// 下都可靠）
 │     ├─ stores/app.ts         # Pinia 示例 store
 │     ├─ stores/settings.ts    # 设置面板状态
+│     ├─ search/               # ★ 站点注册表：sourceKeys.ts / sources.ts / modes.ts / hostSources.ts
 │     ├─ components/SettingsDialog.vue # ★ 设置面板（YouTube Cookie）
 │     ├─ bridge/host.ts        # ★ 前端 ↔ C# 桥（类型 + 降级）
 │     └─ views/HomeView.vue    # Hello World 演示页
@@ -88,7 +89,7 @@ const raw = await window.hostApi.getHostInfo()
 - 浏览器里（`pnpm dev:web`）没有宿主，桥接层自动降级成模拟值，页面照常开发。
 - UI 相关调用必须切到 WinForms 线程（`HostApi.OnUiThread`）。
 
-已有方法：`getHostInfo` / `echo` / `minimize` / `toggleMaximize` / `closeWindow` / `openDevTools` / `setZoomLevel` / `openUserDataFolder`。
+已有方法：`getHostInfo` / `echo` / `minimize` / `toggleMaximize` / `closeWindow` / `openDevTools` / `setZoomLevel` / `openUserDataFolder` / `openLogFolder` / `recordPlaybackLog` / `registerStream` / `searchMedia` / `getVideoInfo` / `resolveMedia` / `openExternalUrl` / `getSettings` / `pickYouTubeCookiesFile` / `checkCookiesFile` / `saveSettings`。
 
 ### 新增一个宿主能力
 
@@ -323,7 +324,7 @@ B站优先 AAC-LC 192K，当前 CEF 不支持时按需转码；YouTube 优先 We
 
 | 项 | 说明 |
 | --- | --- |
-| JS 入口 | `host.resolveBilibili(url)` / `host.resolveYouTube(url)` → `{ ok, title, artist, duration, streamUrl, playbackMode, cached: false, error }` |
+| JS 入口 | `host.resolveMedia(source, url)`（`source` 为 `bilibili` / `youtube`）→ `{ ok, title, artist, duration, streamUrl, playbackMode, cached: false, error }` |
 | 宿主实现 | `Bilibili.cs` 取 DASH 音轨，`YoutubeStreamResolver.cs` 用 yt-dlp 仅取元数据，`StreamProxy.cs` 代理，`VirtualWaveStream.cs` 实时解码和跳转 |
 | ffmpeg 查找 | `MUSICPLAYER_FFMPEG` → PATH → WinGet 的 `Gyan.FFmpeg*`；仅实时转码需要 |
 | yt-dlp 查找 | `MUSICPLAYER_YTDLP` → PATH → Python313 用户脚本目录 → `python -m yt_dlp` |
@@ -417,13 +418,34 @@ function receive(result: MediaSearchResult) {
 </template>
 ```
 
-`result` 的结构为 `{ ok, source, keyword, items, error }`。`items` 包含 `id`、`title`、`author`（UP 主或频道名）、`url`（视频页链接）、`thumbnail`、`duration`（秒）、`playCount`；每个平台结束时分别触发一次。组件也通过模板 ref 暴露 `search()` 和 `clear()`；清空或卸载组件会忽略旧请求的结果。
+`result` 的结构为 `{ ok, source, keyword, items, error }`。`items` 包含 `id`、`title`、`author`（UP 主或频道名）、`url`（视频页链接）、`thumbnail`、`duration`（秒）、`playCount`；每个站点结束时分别触发一次。组件也通过模板 ref 暴露 `search()` 和 `clear()`；清空或卸载组件会忽略旧请求的结果。
 
-仅调用搜索逻辑可使用 `renderer/src/search/songVideoSearch.ts` 的 `searchSongVideos`，传入歌曲信息和两个搜索函数即可，无需渲染组件。
+仅调用搜索逻辑可使用 `renderer/src/search/songVideoSearch.ts` 的 `searchSongVideos`，传入歌曲信息和站点列表即可，无需渲染组件：
+
+```ts
+// targets 只要满足 { key, search }；SearchSource（hostSources.ts）天然满足
+await searchSongVideos({ song: '晴天', artist: '周杰伦' }, sourcesForMode('song'), 6, (result) => {})
+```
 
 - B站搜索由 C# 宿主请求 Web 搜索接口，复用 WBI 签名。接口可能触发风控，失败时提供网页版搜索入口。
 - YouTube 通过 [yt-dlp](https://github.com/yt-dlp/yt-dlp#usage-and-options) 的 `ytsearchN:` 与 `--flat-playlist` 获取结果，需要安装 yt-dlp；搜索无需 ffmpeg 或 YouTube API Key。宿主会沿用系统代理或启动参数 `--proxy`。
 - `pnpm dev:web` 只有浏览器页面，没有 C# 宿主，不能直接获取两站结果，会显示搜索页入口。
+
+### 搜索的站点注册表（加一个站点只改几处）
+
+入口、执行、结果面板都不写死站点；所有站点差异集中在一张描述表里：
+
+| 位置 | 作用 |
+| --- | --- |
+| [`renderer/src/search/sourceKeys.ts`](renderer/src/search/sourceKeys.ts) | 支持哪些站点（`REMOTE_SOURCE_KEYS`）+ 类型 + 校验；没有 import，桥/播放列表/搜索共用 |
+| [`renderer/src/search/sources.ts`](renderer/src/search/sources.ts) | 每个站点的差异：面板标题、域名角标、平台名、站内搜索页、视频页链接识别、占位标题、`formatMeta` 展示差异 |
+| [`renderer/src/search/modes.ts`](renderer/src/search/modes.ts) | 每个模式涉及哪些站点（结果面板和实际请求都按它来） |
+| [`renderer/src/search/hostSources.ts`](renderer/src/search/hostSources.ts) | 描述表 × 宿主调用，得到 `SEARCH_SOURCES`；组件只依赖它 |
+| [`renderer/src/components/VideoSearch.vue`](renderer/src/components/VideoSearch.vue) | 通用结果列表：按模式渲染站点面板，不出现 `=== 'bilibili'` 这类分支 |
+
+宿主侧对应三个薄路由（`host.ts` 里同名包装）：`searchMedia(source, keyword, limit)`、`getVideoInfo(source, url)`、`resolveMedia(source, url, supportedTypes)`。未知 `source` 会明确返回「暂不支持的站点：xxx」，不会被当成 YouTube 解析；播放列表存档里不认识的 `kind` 也会直接丢弃（见 `playlist/persistence.ts`、`playlist/hostAdapter.ts`）。
+
+**加一个站点**：① `sourceKeys.ts` 加键 → ② `sources.ts` 补一条描述 → ③ `modes.ts` 决定哪些模式带上它 → ④ 宿主 `HostApi.IsKnownSource` + 搜索/解析实现 → ⑤ 需要时在描述里给 `formatMeta` / `linkHint`。组件、结果面板和播放链路不用改。
 
 验证命令：
 

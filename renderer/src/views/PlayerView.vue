@@ -2,7 +2,7 @@
 import { onMounted, ref } from 'vue'
 import AudioPlayer from '@/components/AudioPlayer.vue'
 import SettingsButton from '@/components/SettingsButton.vue'
-import { host } from '@/bridge/host'
+import { host, type MediaSearchSource } from '@/bridge/host'
 
 const player = ref<InstanceType<typeof AudioPlayer> | null>(null)
 
@@ -69,23 +69,22 @@ async function playViaProxy(): Promise<void> {
 
 /** B站 地址：直接流播放，不兼容时按需实时转码 */
 async function playBilibili(): Promise<void> {
-  await playRemote('resolveBilibili', 'B站')
+  await playRemote('bilibili', 'B站')
 }
 
 /** YouTube 地址：yt-dlp 仅解析地址，不下载音频文件 */
 async function playYouTube(): Promise<void> {
-  await playRemote('resolveYouTube', 'YouTube')
+  await playRemote('youtube', 'YouTube')
 }
 
-/** B站 / YouTube 共用流程：解析 -> 取 stream:// 地址 -> 播放 -> 更新标题歌手 */
-async function playRemote(kind: 'resolveBilibili' | 'resolveYouTube', label: string): Promise<void> {
+/** 站点共用流程：解析 -> 取 stream:// 地址 -> 播放 -> 更新标题歌手 */
+async function playRemote(kind: MediaSearchSource, label: string): Promise<void> {
   const input = urlInput.value.trim()
   if (!input) return
   biliBusy.value = true
   status.value = `正在获取 ${label} 音频流…`
   try {
-    const result =
-      kind === 'resolveBilibili' ? await host.resolveBilibili(input) : await host.resolveYouTube(input)
+    const result = await host.resolveMedia(kind, input)
     if (!result.ok || !result.streamUrl) {
       status.value = `${label} 解析失败：${result.error ?? '未知错误'}`
       return

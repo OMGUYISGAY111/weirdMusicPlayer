@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { PlaylistTrack } from '@/playlist/playlist'
+import { findSourceInfo } from '@/search/sources'
 
 defineProps<{
   items: readonly PlaylistTrack[]
@@ -11,6 +12,12 @@ const emit = defineEmits<{
   remove: [id: string]
   clear: []
 }>()
+
+/** 平台名来自站点注册表，新增站点不用改这里 */
+function kindLabel(item: PlaylistTrack): string {
+  if (item.source.kind === 'audio') return '音频'
+  return findSourceInfo(item.source.kind)?.kindLabel ?? item.source.kind
+}
 </script>
 
 <template>
@@ -26,7 +33,7 @@ const emit = defineEmits<{
         <img v-if="item.cover" class="cover" :src="item.cover" alt="" loading="lazy" referrerpolicy="no-referrer" @error="($event.target as HTMLImageElement).hidden = true" />
         <div class="info">
           <strong>{{ item.title }}</strong>
-          <small>{{ item.artist || '未知作者' }} · {{ item.source.kind === 'audio' ? '音频' : item.source.kind === 'bilibili' ? 'B站' : 'YouTube' }}</small>
+          <small>{{ item.artist || '未知作者' }} · {{ kindLabel(item) }}</small>
         </div>
         <span v-if="item.id === currentId" class="current-label">{{ busy ? '解析中…' : '当前曲目' }}</span>
         <button type="button" :aria-label="`播放 ${item.title}`" @click="emit('play', item.id)">播放</button>

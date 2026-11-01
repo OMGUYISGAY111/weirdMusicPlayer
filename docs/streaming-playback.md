@@ -8,7 +8,7 @@
 
 前端 `supportedAudioTypes()` 用当前 CEF 的 `Audio.canPlayType()` 查询精确 MIME/codec，并随解析请求发送给宿主。支持的格式使用 HTTP 直接代理，保留 Range、必要的 Referer/User-Agent 及解析时的代理出口。YouTube 优先选择 WebM/Opus；B站优先 AAC-LC 192K，如果 CEF 无法解码则进入实时转码。
 
-`host.resolveBilibili(url)` / `host.resolveYouTube(url)` 的返回值继续提供 `streamUrl`，新增 `playbackMode: 'direct' | 'transcode'`。兼容字段 `cached` 固定为 false。播放列表及结束事件/播放模式逻辑无需感知流的实现。
+`host.resolveMedia(source, url)`（`source` 为 `bilibili` / `youtube`）的返回值继续提供 `streamUrl`，新增 `playbackMode: 'direct' | 'transcode'`。兼容字段 `cached` 固定为 false。播放列表及结束事件/播放模式逻辑无需感知流的实现；前端通过 `search/sources.ts` 的站点注册表按 `source` 取解析能力。
 
 ## 实时转码与跳转
 

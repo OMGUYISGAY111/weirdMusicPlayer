@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
+import { SEARCH_MODES } from '@/search/modes'
 
 withDefaults(defineProps<{ busy?: boolean; canSubmit?: boolean }>(), { busy: false, canSubmit: true })
 const song = defineModel<string>('song', { default: '' })
@@ -8,7 +9,8 @@ const album = defineModel<string>('album', { default: '' })
 const url = defineModel<string>('url', { default: '' })
 const mode = defineModel<'song' | 'link'>('mode', { default: 'song' })
 defineEmits<{ submit: [] }>()
-const modes = [{ key: 'song', label: '歌曲名 · 歌手 · 专辑' }, { key: 'link', label: 'B站 / YouTube 链接' }] as const
+// 模式标题只在这里维护；每个模式查哪些站点见 search/modes.ts
+const modes = SEARCH_MODES.map((entry) => ({ key: entry.key, label: entry.label }))
 const activeIndex = computed(() => modes.findIndex((item) => item.key === mode.value))
 const hoveredIndex = ref<number | null>(null)
 const captionMode = computed(() => modes[hoveredIndex.value ?? activeIndex.value]!)

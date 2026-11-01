@@ -2,7 +2,9 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { searchSongVideos, songKeyword } from '@/search/songVideoSearch'
 import AppHeader from './AppHeader.vue'
+import { SEARCH_SOURCES, sourcesForMode, type SearchSource } from '@/search/hostSources'
 import { resolveVideoLink } from '@/search/videoLink'
+import type { SearchModeKey } from '@/search/modes'
 import {
   host,
   hostBridge,
@@ -12,10 +14,15 @@ import {
 } from '@/bridge/host'
 
 /**
- * 按歌曲信息搜视频：填「歌曲名 / 作者 / 专辑」，同时搜 B站 和 YouTube，列出可点的视频链接。
+ * 按歌曲信息搜视频：填「歌曲名 / 作者 / 专辑」，同时搜当前模式涉及的站点，列出可点的视频链接。
  *
- * 搜索本身在宿主里做（renderer 直接 fetch 会被 CORS / CSP 拦住），
- * 这里只负责拼关键词、并发调用、展示结果：
+ * 分工：
+ *   - 入口（AppHeader / SearchBar）只管输入和模式，不认识结果；
+ *   - 模式（search/modes.ts）声明涉及哪些站点，这里只按它渲染面板、执行搜索；
+ *   - 站点差异（标题、域名、兜底搜索页、链接识别、元信息文案）全在 search/sources.ts；
+ *   - 结果组件本身只画通用的卡片/列表，不写任何 `=== 'bilibili'` 分支。
+ *
+ * 交互：
  *   - 「打开」/ 点标题 → 交给宿主用系统浏览器打开（不会把 CEF 窗口导航走）
  *   - 「复制链接」      → 复制视频页地址
  *   - 「立即播放」      → emit('play', item)，由父页面决定如何播放
@@ -23,14 +30,14 @@ import {
  */
 
 interface Props {
-  /** 每个平台最多返回几条（1~30，宿主侧也会夹紧） */
+  /** 每个站点最多返回几条（1~30，宿主侧也会夹紧） */
   limit?: number
 }
 
 const props = withDefaults(defineProps<Props>(), { limit: 6 })
 
 const emit = defineEmits<{
-  /** 每个平台完成时返回实际视频链接；可由父页面保存或加入列表。 */
+  /** 每个站点完成时返回实际视频链接；可由父页面保存或加入列表。 */
   result: [result: MediaSearchResult]
   /** 用户点了「立即播放」，参数是选中那条视频 */
   play: [item: MediaSearchItem]
@@ -40,23 +47,23 @@ const emit = defineEmits<{
 
 type PanelState = 'idle' | 'loading' | 'done' | 'empty' | 'error'
 
+/** 一个站点的结果面板；站点能力全在 source 里，面板只存状态 */
 interface Panel {
+  source: SearchSource
   key: MediaSearchSource
-  label: string
-  hint: string
   state: PanelState
   items: MediaSearchItem[]
   error: string
 }
 
-function createPanel(key: MediaSearchSource, label: string, hint: string): Panel {
-  return { key, label, hint, state: 'idle', items: [], error: '' }
+function createPanel(source: SearchSource): Panel {
+  return { source, key: source.key, state: 'idle', items: [], error: '' }
 }
 
 const song = defineModel<string>('song', { default: '' })
 const artist = defineModel<string>('artist', { default: '' })
 const album = defineModel<string>('album', { default: '' })
-const mode = ref<'song' | 'link'>('song')
+const mode = ref<SearchModeKey>('song')
 const videoUrl = ref('')
 const linkItem = ref<MediaSearchItem | null>(null)
 const linkError = ref('')
@@ -70,10 +77,12 @@ watch(videoUrl, () => {
 }, { flush: 'sync' })
 watch(mode, () => { linkSequence += 1; linkLoading.value = false })
 
-// reactive 对象本身是代理，模板里直接读属性就能跟踪
-const bili = reactive<Panel>(createPanel('bilibili', '哔哩哔哩', 'bilibili.com'))
-const youtube = reactive<Panel>(createPanel('youtube', 'YouTube', 'youtube.com'))
-const panels: Panel[] = [bili, youtube]
+// 每个已知站点一个面板，顺序即注册表顺序；具体显示哪些由当前模式决定
+const panels = SEARCH_SOURCES.map((source) => reactive(createPanel(source)))
+const activePanels = computed(() => {
+  const keys = new Set(sourcesForMode(mode.value).map((source) => source.key))
+  return panels.filter((panel) => keys.has(panel.key))
+})
 
 const requestSeq = ref(0)
 const copiedUrl = ref('')
@@ -86,17 +95,8 @@ const keyword = computed(() =>
 const searching = computed(() => linkLoading.value || panels.some((panel) => panel.state === 'loading'))
 const canSearch = computed(() => (mode.value === 'song' ? song.value.trim() : videoUrl.value.trim()).length > 0 && !searching.value)
 const inHost = computed(() => hostBridge.ready)
-
-/** 宿主不可用（浏览器预览）或某平台报错时，给一个能直接点的网页版搜索 */
-const fallbackLinks = computed(() => {
-  const query = keyword.value.trim()
-  if (!query) return null
-  const encoded = encodeURIComponent(query)
-  return {
-    bilibili: `https://search.bilibili.com/all?keyword=${encoded}`,
-    youtube: `https://www.youtube.com/results?search_query=${encoded}`,
-  }
-})
+/** 支持粘贴哪些站点的链接，由注册表决定，不在模板里写死 */
+const supportedSites = SEARCH_SOURCES.map((source) => source.kindLabel).join(' / ')
 
 function applyResult(panel: Panel, result: MediaSearchResult): void {
   panel.items = result.items
@@ -117,10 +117,7 @@ async function search(): Promise<void> {
     linkItem.value = null
     linkLoading.value = true
     try {
-      const item = await resolveVideoLink(videoUrl.value, {
-        bilibili: (url) => host.getBilibiliVideoInfo(url),
-        youtube: (url) => host.getYouTubeVideoInfo(url),
-      })
+      const item = await resolveVideoLink(videoUrl.value, sourcesForMode('link'))
       if (seq === linkSequence) linkItem.value = item
     } catch (error) {
       if (seq === linkSequence) linkError.value = error instanceof Error ? error.message : String(error)
@@ -140,14 +137,12 @@ async function search(): Promise<void> {
 
   await searchSongVideos(
     { song: song.value, artist: artist.value, album: album.value },
-    {
-      bilibili: (query, limit) => host.searchBilibili(query, limit),
-      youtube: (query, limit) => host.searchYouTube(query, limit),
-    },
+    sourcesForMode('song'),
     props.limit,
     (result) => {
       if (seq !== requestSeq.value) return
-      applyResult(result.source === 'bilibili' ? bili : youtube, result)
+      const panel = panels.find((entry) => entry.key === result.source)
+      if (panel) applyResult(panel, result)
       emit('result', result)
     },
   )
@@ -229,15 +224,15 @@ function formatDuration(seconds: number): string {
   return hours > 0 ? `${hours}:${pad(minutes)}:${pad(rest)}` : `${minutes}:${pad(rest)}`
 }
 
-function formatPlayCount(count: number): string {
-  if (!Number.isFinite(count) || count <= 0) return ''
-  if (count >= 100_000_000) return `${(count / 100_000_000).toFixed(1)} 亿播放`
-  if (count >= 10_000) return `${(count / 10_000).toFixed(1)} 万播放`
-  return `${count} 播放`
+/** 站点专属的元信息文案（播放量写法等）；没配就只显示作者 */
+function metaText(panel: Panel, item: MediaSearchItem): string[] {
+  return panel.source.formatMeta?.(item) ?? []
 }
 
+/** 宿主不可用或该站点报错时，给这个站点自己的网页版搜索入口 */
 function panelFallback(panel: Panel): string {
-  return fallbackLinks.value?.[panel.key] ?? ''
+  const query = keyword.value.trim()
+  return query ? panel.source.searchUrl(query) : ''
 }
 </script>
 
@@ -247,7 +242,7 @@ function panelFallback(panel: Panel): string {
       <div>
         <h2 class="vs-title">搜索音乐</h2>
         <p class="vs-sub">
-          输入歌曲信息搜索视频，或切换模式粘贴 B站 / YouTube 视频链接。
+          输入歌曲信息搜索视频，或切换模式粘贴 {{ supportedSites }} 视频链接。
         </p>
       </div>
       <span class="vs-pill" :class="inHost ? 'ok' : 'warn'">
@@ -285,23 +280,23 @@ function panelFallback(panel: Panel): string {
 
     <p v-if="mode === 'song'" class="vs-query">
       关键词：<code>{{ keyword || '（还没填）' }}</code>
-      <span v-if="searching" class="vs-query-busy">搜索中，YouTube 首次通常要 3~10 秒…</span>
+      <span v-if="searching" class="vs-query-busy">搜索中，首次可能需要 3~10 秒…</span>
     </p>
 
     <div v-if="mode === 'song'" class="vs-grid">
-      <section v-for="panel in panels" :key="panel.key" class="vs-panel" aria-live="polite" :aria-busy="panel.state === 'loading'">
+      <section v-for="panel in activePanels" :key="panel.key" class="vs-panel" aria-live="polite" :aria-busy="panel.state === 'loading'">
         <header class="vs-panel-head">
           <h3>
             <span class="vs-dot" :class="panel.key" />
-            {{ panel.label }}
+            {{ panel.source.label }}
           </h3>
           <span class="vs-panel-meta">
             <template v-if="panel.state === 'done'">{{ panel.items.length }} 条</template>
-            <template v-else>{{ panel.hint }}</template>
+            <template v-else>{{ panel.source.site }}</template>
           </span>
         </header>
 
-        <p v-if="panel.state === 'loading'" class="vs-state">正在搜索 {{ panel.label }}…</p>
+        <p v-if="panel.state === 'loading'" class="vs-state">正在搜索 {{ panel.source.label }}…</p>
 
         <div v-else-if="panel.state === 'error'" class="vs-state error">
           <p>{{ panel.error }}</p>
@@ -312,7 +307,7 @@ function panelFallback(panel: Panel): string {
             rel="noreferrer"
             @click.prevent="host.openExternalUrl(panelFallback(panel))"
           >
-            在浏览器里打开 {{ panel.label }} 搜索页 →
+            在浏览器里打开 {{ panel.source.label }} 搜索页 →
           </a>
         </div>
 
@@ -359,7 +354,7 @@ function panelFallback(panel: Panel): string {
               </a>
               <p class="vs-meta">
                 <span v-if="item.author" class="vs-author" :title="item.author">{{ item.author }}</span>
-                <span v-if="formatPlayCount(item.playCount)">{{ formatPlayCount(item.playCount) }}</span>
+                <span v-for="text in metaText(panel, item)" :key="text">{{ text }}</span>
               </p>
               <div class="vs-item-actions">
                 <button type="button" class="vs-play" @click="emit('play', item)">立即播放</button>

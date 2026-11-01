@@ -1,4 +1,5 @@
 import type { createPlaylist, PlaybackMode, PlaylistData, PlaylistTrack } from './playlist'
+import { isRemoteSourceKey } from '../search/sourceKeys.ts'
 
 export const PLAYLIST_STORAGE_KEY = 'music-player.playlist.v1'
 type StorageAccess = () => Pick<Storage, 'getItem' | 'setItem'>
@@ -17,7 +18,8 @@ function trackFromData(value: unknown): PlaylistTrack | null {
   const source = value.source
   if (!record(source)) return null
   const kind = source.kind
-  if (kind !== 'audio' && kind !== 'bilibili' && kind !== 'youtube') return null
+  // 已知站点由注册表决定；不认识的 kind 直接丢弃，绝不猜成某个站点
+  if (kind !== 'audio' && !isRemoteSourceKey(kind)) return null
   // File、blob 和 stream 地址仅在当前会话有效，不能伪装成可恢复条目。
   if (source.file || !stableUrl(source.url, kind === 'audio' ? undefined : ['http:', 'https:'])) return null
   return {

@@ -1,4 +1,5 @@
 import type { PlaybackSource } from '../playback/types'
+import type { RemoteSourceKey } from '../search/sourceKeys'
 
 /** 列表只保存原始来源；视频临时播放地址在播放时解析。 */
 export interface PlaylistTrack {
@@ -6,7 +7,7 @@ export interface PlaylistTrack {
   title: string
   artist?: string
   cover?: string
-  source: { kind: 'bilibili' | 'youtube'; url: string } | ({ kind: 'audio' } & PlaybackSource)
+  source: { kind: RemoteSourceKey; url: string } | ({ kind: 'audio' } & PlaybackSource)
 }
 
 export interface PlaylistPlayer {
