@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import AudioPlayer from '@/components/AudioPlayer.vue'
+import SettingsButton from '@/components/SettingsButton.vue'
 import { host } from '@/bridge/host'
 
 const player = ref<InstanceType<typeof AudioPlayer> | null>(null)
@@ -173,7 +174,10 @@ onMounted(() => {
 <template>
   <main class="page">
     <header class="head">
-      <h1>音频播放器组件</h1>
+      <div class="head-top">
+        <h1>音频播放器组件</h1>
+        <SettingsButton />
+      </div>
       <p>
         只实现了播放/暂停、进度条、音量；封面、标题、歌手来自 <code>file</code> /
         <code>title</code> / <code>artist</code> 属性。播放实现走
@@ -242,9 +246,26 @@ onMounted(() => {
   gap: 18px;
 }
 
+.head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .head h1 {
   margin: 0 0 8px;
   font-size: 24px;
+}
+
+.head-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.head-top h1 {
+  margin: 0;
 }
 
 .head p {

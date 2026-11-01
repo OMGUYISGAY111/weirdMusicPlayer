@@ -16,12 +16,15 @@ app端/
 │     ├─ App.vue
 │     ├─ router/index.ts       # hash 路由（app:// 与 file:// 下都可靠）
 │     ├─ stores/app.ts         # Pinia 示例 store
+│     ├─ stores/settings.ts    # 设置面板状态
+│     ├─ components/SettingsDialog.vue # ★ 设置面板（YouTube Cookie）
 │     ├─ bridge/host.ts        # ★ 前端 ↔ C# 桥（类型 + 降级）
 │     └─ views/HomeView.vue    # Hello World 演示页
 ├─ host/                       # 宿主：C# / WinForms / CefSharp
 │  ├─ Program.cs               # CEF 初始化、自定义 app:// 协议注册
 │  ├─ MainForm.cs              # 主窗口 + 注册 hostApi
 │  ├─ HostApi.cs               # ★ 暴露给 JS 的 C# 方法
+│  ├─ Settings.cs              # ★ settings.json 读写、Cookie 文件体检
 │  ├─ WebTarget.cs             # dev server / 本地 dist 的选择逻辑
 │  ├─ StartupOptions.cs        # --dev / --url / --web-root
 │  └─ app.manifest             # PerMonitorV2 DPI
@@ -326,6 +329,7 @@ B站优先 AAC-LC 192K，当前 CEF 不支持时按需转码；YouTube 优先 We
 | yt-dlp 查找 | `MUSICPLAYER_YTDLP` → PATH → Python313 用户脚本目录 → `python -m yt_dlp` |
 | yt-dlp 安装 | `python -m pip install --user -U "yt-dlp[default]"`，含匹配的签名解析依赖 |
 | JavaScript 运行时 | 自动启用 PATH 中的 Node 22+，可用 `MUSICPLAYER_NODE` 指定；未发现 Node 时使用 yt-dlp 默认运行时 |
+| YouTube 登录 | 播放器「设置」里选择的 Cookie 文件 / 浏览器优先，未配置时回退 `MUSICPLAYER_YOUTUBE_COOKIES` / `MUSICPLAYER_YOUTUBE_COOKIES_BROWSER` |
 | 网络 | B站 API/CDN 直连；YouTube 解析及媒体请求使用相同代理，沿用 `--proxy` / `MUSICPLAYER_PROXY` / WinINET 配置 |
 | 播放模式 | 播放器只发出结束信号，列表决定顺序、列表循环、单曲循环或随机切歌 |
 
@@ -346,21 +350,30 @@ dotnet run --project tools/media-search-check -- --resolve-youtube 'https://www.
 
 当 yt-dlp 返回 `Sign in to confirm you’re not a bot`，先在浏览器里使用与播放器相同的代理出口打开该视频，手动完成登录/人机验证并确认能播放。项目支持两种显式配置，搜索和解析共用；没有配置时不会自动提取浏览器登录信息。
 
-方式一：直接使用已登录的浏览器（`edge` / `chrome` / `firefox`，也支持 yt-dlp 的 profile 语法）。完成验证后退出浏览器和播放器，在同一个 PowerShell 窗口设置并启动，例如：
+方式一（推荐）：播放器内「设置」→ YouTube 登录。
+
+- 点「设置」按钮（首页 / 播放器调试页在右上角，搜索页在搜索栏所在 header 的右侧），选「Cookie 文件」，点「选择文件…」挑导出的 cookies.txt，然后「保存」。也可以选「浏览器」（`edge` / `chrome` / `firefox`，支持 `edge:Default` 这种 profile 写法）直接读已登录浏览器的 Cookie。
+- **保存后立即生效，不用重启**：每次解析 / 搜索 YouTube 时宿主都会把当前配置作为 `--cookies` / `--cookies-from-browser` 传给 yt-dlp。
+- 面板会体检所选文件（是否存在、大小、修改时间、Netscape 格式、youtube.com / google.com 的 Cookie 条数、过期数量），路径不存在时拒绝保存。
+
+方式二：环境变量。适合命令行、脚本或 CI，只影响从该终端启动的进程：
 
 ```powershell
-$env:MUSICPLAYER_YOUTUBE_COOKIES_BROWSER = 'edge'
+$env:MUSICPLAYER_YOUTUBE_COOKIES_BROWSER = 'edge'                     # 读已登录浏览器
+$env:MUSICPLAYER_YOUTUBE_COOKIES = 'D:\MusicPlayerData\youtube-cookies.txt'  # 或用导出的文件
 pnpm dev
 ```
 
-方式二：浏览器 Cookie 数据库被锁定或无法解密时，按 [yt-dlp 官方说明](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)导出 YouTube 的 Netscape 格式 Cookie 文件到项目外，再指定路径：
+生效顺序：**设置面板 > 环境变量 > 未配置**；同一层里 Cookie 文件优先于浏览器。文件不存在会直接提示。设置面板勾选「同时写入当前用户的 `MUSICPLAYER_YOUTUBE_COOKIES` 环境变量」时，会把路径写进用户级环境变量，命令行工具（如 `tools/media-search-check`）也能直接用；清空 Cookie 文件时该变量会被一起删除。
 
-```powershell
-$env:MUSICPLAYER_YOUTUBE_COOKIES = 'D:\MusicPlayerData\youtube-cookies.txt'
-pnpm dev
-```
+Cookie 是登录凭据，不要上传或提交到仓库；过期后需重新导出。官方说明还提醒使用账号下载存在账号被限制的风险，按需使用，避免频繁请求。若配置后仍触发验证，应检查 Cookie 是否过期、profile 是否正确，以及浏览器与播放器的代理出口是否一致；Cookie 无法保证消除所有服务端限制。
 
-Cookie 文件优先于浏览器配置；文件不存在会直接提示。这里的环境变量只影响从该终端启动的进程。Cookie 是登录凭据，不要上传或提交到仓库；过期后需重新导出。官方说明还提醒使用账号下载存在账号被限制的风险，按需使用，避免频繁请求。若配置后仍触发验证，应检查 Cookie 是否过期、profile 是否正确，以及浏览器与播放器的代理出口是否一致；Cookie 无法保证消除所有服务端限制。
+#### 设置面板（右上角齿轮）
+
+- 入口：首页、搜索页、播放器调试页的「设置」按钮（搜索页的在搜索栏所在 header 右侧，与搜索胶囊垂直居中）；`Esc` 或点遮罩关闭。
+- 目前只有「YouTube 登录（Cookie）」一项（不配置 / Cookie 文件 / 浏览器），后续设置项按同样方式往面板里加。
+- 保存位置：数据目录下的 `settings.json`（默认 `D:\MusicPlayerData\settings.json`）。删掉它或把选项改回「不配置」就回到未配置状态。
+- 宿主接口：`host.getSettings()` / `host.pickYouTubeCookiesFile()` / `host.checkCookiesFile(path)` / `host.saveSettings({ youtubeCookiesFile, youtubeCookiesBrowser, persistToUserEnvironment })`，都返回 JSON 字符串，前端只渲染，不自己判断优先级。
 
 **代理与「被 Google 拦」的排查顺序**（本机踩过的完整路径）：
 
@@ -416,7 +429,7 @@ function receive(result: MediaSearchResult) {
 
 ```powershell
 pnpm --filter renderer test # 测试使用 Node 22.18+ 的 TypeScript 类型擦除
-dotnet run --project tools/media-search-check # 本地响应解析检查，无网络请求
+dotnet run --project tools/media-search-check # 本地响应解析检查，无网络请求（含 settings.json 读写与 Cookie 文件体检）
 dotnet run --project tools/media-search-check -- --live # 实际请求两站，各取 3 条链接
 dotnet run --project tools/media-search-check -- --resolve-bili https://www.bilibili.com/video/BV183DFBkEBV # 下载转码验证，缓存到系统临时目录 MusicPlayerBiliProbe
 ```
@@ -441,6 +454,7 @@ dotnet run --project tools/media-search-check -- --resolve-bili https://www.bili
   ![数据目录来源](docs/datadir.png)
 
 - 想搬走已有数据：先关掉应用，把旧目录整个拷到新位置，再用上面的方式指过去即可（缓存可以不清，CEF 会自己校验）。从旧版升级过来时，把 `%LOCALAPPDATA%\MusicPlayer\ver2` 里的内容拷进 `D:\MusicPlayerData` 即可延续登录态。
+- 界面设置（目前是 YouTube Cookie 文件和浏览器）存在目录里的 `settings.json`，与 CEF 缓存、`logs` 诊断日志放在一起；删掉它即回到「未配置」，拷到别的机器也能带走。
 - 注意事项：路径含中文没问题（已实测 `D:\code\项目\音乐播放器\...` 可用）；不要指向网络盘 / OneDrive 同步目录 / 只读盘，CEF 对缓存目录的写入要求较高，容易启动失败。目录不可写时会弹出带完整路径的中文错误提示，而不是 CEF 内部的报错。
 
 ## 为播放器预留的配置

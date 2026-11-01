@@ -61,6 +61,14 @@ export interface CefHostApi {
   searchYouTube(keyword: string, limit: number): Promise<string>
   /** 用系统默认浏览器打开 http(s) 外链（视频页），避免把 CEF 窗口导航走 */
   openExternalUrl(url: string): Promise<void>
+  /** 设置面板数据源：settings.json 里的值 + 环境变量回退 + 生效值 */
+  getSettings(): Promise<string>
+  /** 弹系统文件选择框挑 Cookie 文件，返回 { ok, path, error } */
+  pickYouTubeCookiesFile(): Promise<string>
+  /** 只体检某个路径能不能当 Cookie 文件用，不保存 */
+  checkCookiesFile(path: string): Promise<string>
+  /** 保存设置（JSON 字符串），返回 { ok, error, warning, settings } */
+  saveSettings(json: string): Promise<string>
 }
 
 /** 搜索来源 */
@@ -98,6 +106,79 @@ export interface VideoInfoResult {
   ok: boolean
   item: MediaSearchItem | null
   error: string | null
+}
+
+/** 设置面板里的一组成员：YouTube 登录方式。空字符串表示「没配」。 */
+export interface CookieSelection {
+  /** Netscape 格式 Cookie 文件路径 */
+  youtubeCookiesFile: string
+  /** 直接读取已登录浏览器的名称，语法同 yt-dlp --cookies-from-browser */
+  youtubeCookiesBrowser: string
+}
+
+/** Cookie 文件体检结果（宿主扫文件头，不读取真实登录内容） */
+export interface CookieFileStatus {
+  path: string
+  exists: boolean
+  size: number
+  /** 宿主格式化好的本地时间，空字符串表示未知 */
+  modified: string
+  /** 是否像 Netscape 格式 */
+  netscape: boolean
+  /** youtube.com / google.com 域的 Cookie 条数 */
+  cookieCount: number
+  expiredCount: number
+  /** 给用户看的一句话说明 */
+  note: string
+}
+
+/** 宿主 GetSettings() 返回的完整快照：设置文件里的值、环境变量回退、实际生效值 */
+export interface SettingsSnapshot {
+  ok: boolean
+  /** 是否真的连着 C# 宿主（浏览器预览为 false） */
+  inHost: boolean
+  /** settings.json 的绝对路径，浏览器预览时为空 */
+  settingsPath: string
+  /** 设置文件里保存的值（设置面板的初值） */
+  ui: CookieSelection
+  /** 环境变量里另配的值（仅用于提示，设置优先） */
+  environment: CookieSelection
+  /** 实际生效的 YouTube 登录方式 */
+  effective: {
+    mode: 'file' | 'browser' | 'none'
+    /** 生效值来自哪里：设置（settings.json）/ 环境变量 / 空字符串 */
+    source: string
+    youtubeCookiesFile: string
+    youtubeCookiesBrowser: string
+  }
+  /** 当前生效 Cookie 文件的体检结果；没配文件时 path 为空 */
+  cookieFile: CookieFileStatus
+  /** 宿主的 yt-dlp 查找结果 */
+  ytDlp: { found: boolean; command: string }
+  /** settings.json 读不出来时的提示 */
+  loadWarning: string
+}
+
+/** 保存设置的入参 */
+export interface SettingsInput extends CookieSelection {
+  /** 同时写入用户级环境变量，方便命令行工具复用 */
+  persistToUserEnvironment: boolean
+}
+
+export interface SaveSettingsResult {
+  ok: boolean
+  error: string
+  /** 保存成功但有需要注意的事（例如写环境变量失败） */
+  warning: string
+  /** 保存后的最新快照，失败时为 null */
+  settings: SettingsSnapshot | null
+}
+
+/** 文件选择框的结果；取消时 ok 为 true、path 为空 */
+export interface PickCookiesFileResult {
+  ok: boolean
+  path: string
+  error: string
 }
 
 /** B站 解析结果 */
@@ -146,6 +227,28 @@ const MOCK_INFO: HostInfo = {
   isDev: true,
   userDataPath: '（浏览器预览模式没有本地数据目录）',
   userDataSource: '浏览器预览',
+}
+
+/** 空快照：浏览器预览（没有宿主）时设置面板照样能打开，只是不能保存 */
+const MOCK_SETTINGS: SettingsSnapshot = {
+  ok: true,
+  inHost: false,
+  settingsPath: '',
+  ui: { youtubeCookiesFile: '', youtubeCookiesBrowser: '' },
+  environment: { youtubeCookiesFile: '', youtubeCookiesBrowser: '' },
+  effective: { mode: 'none', source: '', youtubeCookiesFile: '', youtubeCookiesBrowser: '' },
+  cookieFile: {
+    path: '',
+    exists: false,
+    size: 0,
+    modified: '',
+    netscape: false,
+    cookieCount: 0,
+    expiredCount: 0,
+    note: '',
+  },
+  ytDlp: { found: false, command: '' },
+  loadWarning: '',
 }
 
 /**
@@ -374,5 +477,52 @@ export const host = {
     if (bridge) return invoke((api) => api.openExternalUrl(url), undefined)
     if (typeof window !== 'undefined') window.open(url, '_blank', 'noopener,noreferrer')
     return Promise.resolve()
+  },
+
+  /** 读取设置快照；浏览器预览下返回空快照（inHost=false），设置面板据此禁用保存 */
+  async getSettings(): Promise<SettingsSnapshot> {
+    const raw = await invoke<string | null>((api) => api.getSettings(), null)
+    if (!raw) return MOCK_SETTINGS
+    try {
+      const parsed = JSON.parse(raw) as SettingsSnapshot
+      return { ...MOCK_SETTINGS, ...parsed, inHost: parsed.inHost !== false }
+    } catch (error) {
+      console.error('[bridge] 解析设置失败', error)
+      return MOCK_SETTINGS
+    }
+  },
+
+  /** 弹宿主的文件选择框；取消时 ok=true、path 为空 */
+  async pickYouTubeCookiesFile(): Promise<PickCookiesFileResult> {
+    const raw = await invoke<string | null>((api) => api.pickYouTubeCookiesFile(), null)
+    if (!raw) return { ok: false, path: '', error: '浏览器预览模式没有宿主，无法打开文件选择框' }
+    try {
+      return JSON.parse(raw) as PickCookiesFileResult
+    } catch (error) {
+      return { ok: false, path: '', error: String(error) }
+    }
+  },
+
+  /** 只体检路径（不保存），用户在设置面板里选完文件就能看到能不能用 */
+  async checkCookiesFile(path: string): Promise<CookieFileStatus | null> {
+    const raw = await invoke<string | null>((api) => api.checkCookiesFile(path), null)
+    if (!raw) return null
+    try {
+      return (JSON.parse(raw) as { cookieFile: CookieFileStatus }).cookieFile ?? null
+    } catch (error) {
+      console.error('[bridge] 解析 Cookie 体检结果失败', error)
+      return null
+    }
+  },
+
+  /** 保存设置；宿主会校验路径并返回保存后的快照 */
+  async saveSettings(input: SettingsInput): Promise<SaveSettingsResult> {
+    const raw = await invoke<string | null>((api) => api.saveSettings(JSON.stringify(input)), null)
+    if (!raw) return { ok: false, error: '浏览器预览模式没有宿主，无法保存设置', warning: '', settings: null }
+    try {
+      return JSON.parse(raw) as SaveSettingsResult
+    } catch (error) {
+      return { ok: false, error: String(error), warning: '', settings: null }
+    }
   },
 }

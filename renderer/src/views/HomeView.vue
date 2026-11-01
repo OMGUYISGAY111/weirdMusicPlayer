@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { host, hostBridge, type HostInfo } from '@/bridge/host'
 import { useAppStore } from '@/stores/app'
+import SettingsButton from '@/components/SettingsButton.vue'
 
 const appStore = useAppStore()
 
@@ -75,7 +76,10 @@ onMounted(refresh)
           <p>CEF + Vue 3 + TypeScript 起手框架</p>
         </div>
       </div>
-      <span :class="statusClass">{{ statusText }}</span>
+      <div class="topbar-actions">
+        <span :class="statusClass">{{ statusText }}</span>
+        <SettingsButton />
+      </div>
     </header>
 
     <section class="hero">
@@ -174,6 +178,12 @@ onMounted(refresh)
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .brand {

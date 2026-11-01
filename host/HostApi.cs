@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows.Forms;
@@ -47,6 +48,192 @@ internal sealed class HostApi
         };
 
         return JsonSerializer.Serialize(info, JsonOptions);
+    }
+
+    /// <summary>
+    /// 设置面板的数据源：已保存的值、环境变量回退、实际生效的值，以及 Cookie 文件的体检结果。
+    /// 前端只需渲染 JSON，不用自己拼优先级。
+    /// </summary>
+    public string GetSettings() => JsonSerializer.Serialize(BuildSettingsSnapshot(), JsonOptions);
+
+    /// <summary>弹出系统文件选择框挑 Cookie 文件；用户取消时 path 为空。</summary>
+    public string PickYouTubeCookiesFile()
+    {
+        try
+        {
+            var path = ShowCookiesFileDialog() ?? string.Empty;
+            return JsonSerializer.Serialize(new { ok = true, path, error = string.Empty }, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            PlaybackLog.Exception("settings", "pick_cookies_failed", ex);
+            return JsonSerializer.Serialize(new { ok = false, path = string.Empty, error = ex.Message }, JsonOptions);
+        }
+    }
+
+    /// <summary>只体检某个路径（不保存），用于「选择文件」后立刻告诉用户这个文件能不能用。</summary>
+    public string CheckCookiesFile(string path) => JsonSerializer.Serialize(
+        new { ok = true, cookieFile = DescribeCookieFile(CookieFileInspector.Inspect(path)) }, JsonOptions);
+
+    /// <summary>
+    /// 保存设置。入参 JSON：{ youtubeCookiesFile, youtubeCookiesBrowser, persistToUserEnvironment }。
+    /// Cookie 文件不存在时返回 ok=false，不写入设置文件；保存后立即对下一次 yt-dlp 调用生效，无需重启。
+    /// </summary>
+    public string SaveSettings(string json)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
+            var root = document.RootElement;
+
+            string? Text(string name) => root.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString()
+                : null;
+
+            var persist = root.TryGetProperty("persistToUserEnvironment", out var flag)
+                && flag.ValueKind is JsonValueKind.True;
+
+            var saved = PlayerSettings.Save(Text("youtubeCookiesFile"), Text("youtubeCookiesBrowser"));
+            var warning = persist ? MirrorToUserEnvironment(saved) : string.Empty;
+            PlaybackLog.Write("settings", "saved", new
+            {
+                cookieFile = saved.YouTubeCookiesFile,
+                cookieBrowser = saved.YouTubeCookiesBrowser,
+                persistToEnvironment = persist,
+                warning,
+            });
+
+            return JsonSerializer.Serialize(
+                new { ok = true, error = string.Empty, warning, settings = BuildSettingsSnapshot() }, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            PlaybackLog.Exception("settings", "save_failed", ex);
+            return JsonSerializer.Serialize(
+                new { ok = false, error = ex.Message, warning = string.Empty, settings = (object?)null }, JsonOptions);
+        }
+    }
+
+    /// <summary>把 Cookie 文件同步到用户级环境变量，方便命令行工具复用；失败只给提示，不影响保存。</summary>
+    private static string MirrorToUserEnvironment(PlayerSettings.SettingsData saved)
+    {
+        try
+        {
+            // null 表示删除该变量：清空 Cookie 文件时把之前写进去的值一起清掉。
+            Environment.SetEnvironmentVariable(
+                YtDlpAuthentication.CookieFileVariable,
+                string.IsNullOrWhiteSpace(saved.YouTubeCookiesFile) ? null : saved.YouTubeCookiesFile,
+                EnvironmentVariableTarget.User);
+            return string.Empty;
+        }
+        catch (Exception ex)
+        {
+            PlaybackLog.Exception("settings", "mirror_environment_failed", ex);
+            return $"设置已保存，但写入用户环境变量失败：{ex.Message}";
+        }
+    }
+
+    private static object BuildSettingsSnapshot()
+    {
+        var saved = PlayerSettings.Read();
+        var effectiveFile = PlayerSettings.EffectiveCookiesFile ?? string.Empty;
+        var effectiveBrowser = PlayerSettings.EffectiveCookiesBrowser ?? string.Empty;
+        var mode = effectiveFile.Length > 0 ? "file" : effectiveBrowser.Length > 0 ? "browser" : "none";
+        var ytDlp = YtDlpLocator.Find();
+
+        return new
+        {
+            ok = true,
+            inHost = true,
+            settingsPath = PlayerSettings.FilePath ?? string.Empty,
+            // 设置文件里存的值（表单初值）
+            ui = new
+            {
+                youtubeCookiesFile = saved.YouTubeCookiesFile ?? string.Empty,
+                youtubeCookiesBrowser = saved.YouTubeCookiesBrowser ?? string.Empty,
+            },
+            // 环境变量里另配的值（设置优先，界面需要提示「这条其实没用上」）
+            environment = new
+            {
+                youtubeCookiesFile = PlayerSettings.EnvironmentCookiesFile ?? string.Empty,
+                youtubeCookiesBrowser = PlayerSettings.EnvironmentCookiesBrowser ?? string.Empty,
+            },
+            effective = new
+            {
+                mode,
+                source = PlayerSettings.DescribeSource(cookiesFile: mode == "file"),
+                youtubeCookiesFile = effectiveFile,
+                youtubeCookiesBrowser = effectiveBrowser,
+            },
+            cookieFile = DescribeCookieFile(
+                CookieFileInspector.Inspect(mode == "file" ? effectiveFile : null)),
+            ytDlp = new
+            {
+                found = ytDlp != null,
+                command = ytDlp is null
+                    ? string.Empty
+                    : string.Join(" ", ytDlp.PrefixArguments.Prepend(ytDlp.FileName)),
+            },
+            loadWarning = PlayerSettings.LoadWarning ?? string.Empty,
+        };
+    }
+
+    private static object DescribeCookieFile(CookieFileInfo info) => new
+    {
+        path = info.FilePath,
+        exists = info.Exists,
+        size = info.Size,
+        modified = info.Modified?.ToString("yyyy-MM-dd HH:mm") ?? string.Empty,
+        netscape = info.Netscape,
+        cookieCount = info.CookieCount,
+        expiredCount = info.ExpiredCount,
+        note = info.Note,
+    };
+
+    /// <summary>OpenFileDialog 必须跑在 UI 线程；CEF 的 JS 调用线程要 Invoke 回来。</summary>
+    private string? ShowCookiesFileDialog()
+    {
+        if (_form.IsDisposed)
+        {
+            return null;
+        }
+
+        string? selected = null;
+
+        void Show()
+        {
+            using var dialog = new OpenFileDialog
+            {
+                Title = "选择 yt-dlp 使用的 Cookie 文件（Netscape 格式）",
+                Filter = "Cookie 文件 (*.txt;*.cookies)|*.txt;*.cookies|所有文件 (*.*)|*.*",
+                CheckFileExists = true,
+                Multiselect = false,
+                RestoreDirectory = true,
+            };
+
+            var current = PlayerSettings.EffectiveCookiesFile;
+            var initialDirectory = current is { Length: > 0 } ? Path.GetDirectoryName(current) : PlayerSettings.DataDirectory;
+            if (!string.IsNullOrWhiteSpace(initialDirectory) && Directory.Exists(initialDirectory))
+            {
+                dialog.InitialDirectory = initialDirectory;
+            }
+
+            if (dialog.ShowDialog(_form) == DialogResult.OK)
+            {
+                selected = dialog.FileName;
+            }
+        }
+
+        if (_form.InvokeRequired)
+        {
+            _form.Invoke((Action)Show);
+        }
+        else
+        {
+            Show();
+        }
+
+        return selected;
     }
 
     /// <summary>往返调用演示</summary>

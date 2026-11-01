@@ -25,8 +25,21 @@ internal static class Program
         {
             options = StartupOptions.Parse(args);
             PlaybackLog.Initialize(options.UserDataDir);
+            // 界面设置存在数据目录的 settings.json，读取失败只记一条警告，不影响启动
+            PlayerSettings.Initialize(options.UserDataDir);
             PlaybackLog.Write("app", "startup", new { version = typeof(Program).Assembly.GetName().Version?.ToString(), dev = options.Dev,
                 runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription, os = Environment.OSVersion.VersionString });
+            if (PlayerSettings.LoadWarning is { Length: > 0 } settingsWarning)
+            {
+                PlaybackLog.Write("settings", "load_warning", new { warning = settingsWarning }, "warn");
+            }
+            PlaybackLog.Write("settings", "loaded", new
+            {
+                path = PlayerSettings.FilePath,
+                cookieFile = PlayerSettings.EffectiveCookiesFile,
+                cookieBrowser = PlayerSettings.EffectiveCookiesBrowser,
+                cookieFileSource = PlayerSettings.DescribeSource(cookiesFile: true),
+            });
             target = WebTarget.Resolve(options);
         }
         catch (Exception ex)

@@ -116,11 +116,95 @@ try
 finally { File.Delete(cookieTestFile); Directory.Delete(cookieTestDir); }
 Check(YtDlpAuthentication.DescribeFailure("Sign in to confirm you’re not a bot", 1)
     .Contains(YtDlpAuthentication.CookieFileVariable), "人机验证错误缺少配置提示");
+Check(YtDlpAuthentication.DescribeFailure("Sign in to confirm you’re not a bot", 1)
+    .Contains("设置"), "人机验证错误应提示播放器内的设置面板");
 Check(YtDlpAuthentication.DescribeFailure("ERROR: Failed to decrypt cookies", 1)
     .Contains("解密"), "Cookie 解密错误没有解释");
 Check(YtDlpAuthentication.DescribeFailure("ERROR: video unavailable", 1)
     .Contains("video unavailable"), "其他错误应保留诊断信息");
 Console.WriteLine("PASS: YouTube Cookie 配置、参数边界和错误提示检查（无真实 Cookie）");
+
+// 设置面板：settings.json 的保存 / 读取、设置与浏览器 / 环境变量的优先级、Cookie 文件体检。
+var settingsDir = Path.Combine(Path.GetTempPath(), "MusicPlayerSettingsCheck", Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(settingsDir);
+try
+{
+    PlayerSettings.Initialize(settingsDir);
+    Check(PlayerSettings.Read().YouTubeCookiesFile == null && PlayerSettings.FilePath == Path.Combine(settingsDir, PlayerSettings.FileName),
+        "没有设置文件时应按未配置处理");
+    Check(PlayerSettings.LoadWarning == null, "缺少设置文件不应产生加载警告");
+
+    var settingsCookieFile = Path.Combine(settingsDir, "cookies.txt");
+    File.WriteAllText(settingsCookieFile, "# Netscape HTTP Cookie File\n");
+
+    var savedRelative = PlayerSettings.Save("cookies.txt", null);
+    Check(savedRelative.YouTubeCookiesFile == settingsCookieFile, "相对路径应按数据目录补成绝对路径");
+
+    PlayerSettings.Initialize(settingsDir); // 重新读盘：模拟重启
+    Check(PlayerSettings.Read().YouTubeCookiesFile == settingsCookieFile, "设置应在重启后仍然保留");
+    var settingsJson = File.ReadAllText(Path.Combine(settingsDir, PlayerSettings.FileName));
+    Check(settingsJson.Contains("\"youtubeCookiesFile\"", StringComparison.Ordinal)
+        && !settingsJson.Contains("\"youTubeCookiesFile\"", StringComparison.Ordinal),
+        "settings.json 的键名应为文档约定的 youtubeCookiesFile");
+
+    var missingRejected = false;
+    try { PlayerSettings.Save("missing.txt", null); }
+    catch (InvalidOperationException) { missingRejected = true; }
+    Check(missingRejected, "保存不存在的 Cookie 文件应报错");
+    Check(PlayerSettings.Read().YouTubeCookiesFile == settingsCookieFile, "校验失败不应改动已保存的设置");
+
+    var effectiveBefore = PlayerSettings.EffectiveCookiesFile;
+    Check(effectiveBefore == settingsCookieFile, "设置里的 Cookie 文件应是生效值");
+    Check(PlayerSettings.DescribeSource(true).Contains("设置"), "生效值应标注来自设置");
+
+    Environment.SetEnvironmentVariable(YtDlpAuthentication.CookieFileVariable, settingsCookieFile);
+    try
+    {
+        Check(PlayerSettings.EffectiveCookiesFile == settingsCookieFile, "设置优先时应返回设置里的路径");
+        PlayerSettings.Save(null, " edge ");
+        Check(PlayerSettings.Read().YouTubeCookiesFile == null, "清空 Cookie 文件后设置里应为空");
+        Check(PlayerSettings.EffectiveCookiesFile == settingsCookieFile, "设置里没有文件时应回退环境变量");
+        Check(PlayerSettings.EffectiveCookiesBrowser == "edge", "浏览器名称应去掉首尾空格后保存");
+        Check(PlayerSettings.DescribeSource(true).StartsWith("环境变量", StringComparison.Ordinal), "回退到环境变量时应标注来源");
+        Check(File.ReadAllText(Path.Combine(settingsDir, PlayerSettings.FileName))
+            .Contains("\"youtubeCookiesBrowser\"", StringComparison.Ordinal), "浏览器方式的键名应为 youtubeCookiesBrowser");
+    }
+    finally
+    {
+        Environment.SetEnvironmentVariable(YtDlpAuthentication.CookieFileVariable, null);
+    }
+
+    PlayerSettings.Save(null, null);
+    Check(PlayerSettings.Read().YouTubeCookiesFile == null && PlayerSettings.Read().YouTubeCookiesBrowser == null,
+        "清空全部设置后不应残留旧值");
+    PlayerSettings.Initialize(settingsDir);
+    Check(PlayerSettings.Read().YouTubeCookiesBrowser == null, "清空后的设置文件重新读取也应为空");
+
+    // 体检：只统计 youtube/google 域，能识别过期记录，缺失文件明确报告不存在
+    var future = DateTimeOffset.UtcNow.AddDays(30).ToUnixTimeSeconds();
+    var past = DateTimeOffset.UtcNow.AddDays(-2).ToUnixTimeSeconds();
+    var inspectedFile = Path.Combine(settingsDir, "exported-cookies.txt");
+    File.WriteAllText(inspectedFile, string.Join("\n",
+        "# Netscape HTTP Cookie File",
+        $".youtube.com\tTRUE\t/\tFALSE\t{future}\tSID\tabc",
+        $".youtube.com\tTRUE\t/\tFALSE\t{past}\tHSID\tdef",
+        $".example.com\tTRUE\t/\tFALSE\t{future}\tOTHER\tghi",
+        ""));
+    var inspected = CookieFileInspector.Inspect(inspectedFile);
+    Check(inspected.Exists && inspected.Netscape && inspected.Size > 0, "Cookie 文件应被识别为 Netscape 格式");
+    Check(inspected.CookieCount == 2 && inspected.ExpiredCount == 1, "Cookie 体检应只统计 youtube/google 域并识别过期记录");
+    Check(inspected.Note.Contains("2") && inspected.Note.Contains("过期"), "Cookie 体检应给出可读说明");
+    var missing = CookieFileInspector.Inspect(Path.Combine(settingsDir, "nope.txt"));
+    Check(!missing.Exists && missing.Note.Contains("不存在"), "缺失的 Cookie 文件应报告不存在");
+    var nonNetscapeFile = Path.Combine(settingsDir, "plain.txt");
+    File.WriteAllText(nonNetscapeFile, "hello world\n");
+    Check(!CookieFileInspector.Inspect(nonNetscapeFile).Netscape, "非 Cookie 文本不应被当成 Netscape 格式");
+}
+finally
+{
+    try { Directory.Delete(settingsDir, true); } catch { }
+}
+Console.WriteLine("PASS: 设置面板 settings.json 读写、优先级和 Cookie 文件体检");
 
 Check(YtDlpRuntime.BuildArguments(null).Count == 0, "没有 Node 时不应覆盖默认运行时");
 Check(YtDlpRuntime.BuildArguments(@"C:\含空格路径\node.exe").SequenceEqual(

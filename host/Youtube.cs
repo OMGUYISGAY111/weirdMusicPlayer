@@ -34,7 +34,10 @@ internal static class YtDlpRuntime
         : new[] { "--js-runtimes", $"node:{node}" };
 }
 
-/// <summary>只使用用户显式配置的登录来源；不自动扫描或提取浏览器 Cookie。</summary>
+/// <summary>
+/// 只使用用户显式配置的登录来源（设置面板或环境变量）；不自动扫描或提取浏览器 Cookie。
+/// 生效值由 <see cref="PlayerSettings"/> 解析：设置面板 &gt; 环境变量。
+/// </summary>
 internal static class YtDlpAuthentication
 {
     internal const string CookieFileVariable = "MUSICPLAYER_YOUTUBE_COOKIES";
@@ -43,8 +46,8 @@ internal static class YtDlpAuthentication
     internal static void Apply(ProcessStartInfo startInfo)
     {
         foreach (var argument in BuildArguments(
-            Environment.GetEnvironmentVariable(CookieFileVariable),
-            Environment.GetEnvironmentVariable(BrowserVariable)))
+            PlayerSettings.EffectiveCookiesFile,
+            PlayerSettings.EffectiveCookiesBrowser))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -57,7 +60,8 @@ internal static class YtDlpAuthentication
             var path = Path.GetFullPath(Environment.ExpandEnvironmentVariables(cookieFile.Trim()));
             if (!File.Exists(path))
                 throw new InvalidOperationException(
-                    $"找不到 YouTube Cookie 文件，请检查 {CookieFileVariable} 指定的路径。");
+                    $"找不到 YouTube Cookie 文件：{path}。请在播放器「设置 → YouTube 登录」里重新选择，" +
+                    $"或检查 {CookieFileVariable} 指定的路径。");
             return new[] { "--cookies", path };
         }
 
@@ -80,11 +84,11 @@ internal static class YtDlpAuthentication
         if (stderr.Contains("Sign in to confirm", StringComparison.OrdinalIgnoreCase)
             || stderr.Contains("not a bot", StringComparison.OrdinalIgnoreCase))
         {
-            return "YouTube 要求登录或人机验证。请在浏览器中使用与播放器相同的代理打开此视频，" +
-                "手动登录并完成验证。然后将导出的 Netscape 格式 Cookie 文件路径配置到 " +
-                CookieFileVariable + "；或将浏览器名称（如 firefox、edge、chrome）配置到 " +
-                BrowserVariable + "，重启播放器后重试。若已配置 Cookie，请检查是否过期、是否选错浏览器配置，" +
-                "以及浏览器与播放器是否使用同一代理出口。";
+            return "YouTube 要求登录或人机验证。请先在浏览器里用与播放器相同的代理打开此视频，" +
+                "手动登录并完成验证；然后点播放器右上角「设置」，选择导出的 Netscape 格式 Cookie 文件，" +
+                "或改成读取已登录的浏览器，保存后立即生效、不用重启。" +
+                $"命令行里也可以把文件路径配置到 {CookieFileVariable}，把浏览器名称（firefox、edge、chrome）配置到 {BrowserVariable}。" +
+                "若已配置 Cookie，请检查是否过期、是否选错浏览器配置，以及浏览器与播放器是否使用同一代理出口。";
         }
 
         if (stderr.Contains("cookie", StringComparison.OrdinalIgnoreCase)
@@ -93,7 +97,8 @@ internal static class YtDlpAuthentication
                 || stderr.Contains("Permission denied", StringComparison.OrdinalIgnoreCase)))
         {
             return "yt-dlp 无法读取或解密浏览器 Cookie。请先完全退出所选浏览器后重试；" +
-                "若仍失败，改用导出的 Netscape 格式 Cookie 文件，并通过 " + CookieFileVariable + " 配置。";
+                "若仍失败，改用导出的 Netscape 格式 Cookie 文件，并在播放器「设置」里选择该文件" +
+                $"（或配置 {CookieFileVariable}）。";
         }
 
         if (stderr.Contains("Requested format is not available", StringComparison.OrdinalIgnoreCase))
