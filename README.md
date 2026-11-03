@@ -523,6 +523,14 @@ await searchSongVideos({ song: '晴天', artist: '周杰伦' }, sourcesForMode('
 - YouTube 通过 [yt-dlp](https://github.com/yt-dlp/yt-dlp#usage-and-options) 的 `ytsearchN:` 与 `--flat-playlist` 获取结果，需要安装 yt-dlp；搜索无需 ffmpeg 或 YouTube API Key。宿主会沿用系统代理或启动参数 `--proxy`。
 - `pnpm dev:web` 只有浏览器页面，没有 C# 宿主，不能直接获取两站结果，会显示搜索页入口。
 
+### 搜索模式圆点与焦点处理
+
+点击搜索框后，点击当前模式的红点可展开模式菜单；点击旁边的小灰点可直接切换模式。
+
+`SearchBar.vue` 的失焦处理先用 `FocusEvent.relatedTarget` 判断焦点是否仍在搜索区内。目标为空时，用可取消的 `setTimeout(..., 0)` 等焦点转移完成后再检查 `document.activeElement`，并在重新获焦和卸载时清理定时器。不能在 `focusout` 中用 `queueMicrotask` 立即据 `activeElement` 收起：原生鼠标点击可能在新按钮获焦前执行微任务，此时焦点暂落 `body`，按钮会在 `click` 前被隐藏，表现为红点点不动。
+
+手动回归：输入框 → 红点打开菜单 → 选择链接模式 → 切回歌曲模式；小灰点直接切换；展开歌手/专辑；Tab 在内部移动与离开搜索区；Esc 关闭菜单；点空白处收起。点击内部控件时，搜索栏应保持展开。
+
 ### 搜索的站点注册表（加一个站点只改几处）
 
 入口、执行、结果面板都不写死站点；所有站点差异集中在一张描述表里：

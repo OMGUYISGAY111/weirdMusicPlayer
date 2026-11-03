@@ -22,8 +22,17 @@ const mainInput = ref<HTMLInputElement | null>(null)
 const showControls = ref(false)
 /** 卡片打开时点外面只关卡片：这次失焦不再把搜索栏一起收起，红点留在原位。 */
 let keepControlsOnBlur = false
+let focusOutTimer: number | undefined
+
+function clearFocusOutTimer(): void {
+  if (focusOutTimer !== undefined) {
+    window.clearTimeout(focusOutTimer)
+    focusOutTimer = undefined
+  }
+}
 
 function onFocusIn(): void {
+  clearFocusOutTimer()
   showControls.value = true
   keepControlsOnBlur = false
 }
@@ -66,8 +75,15 @@ function onOutsidePointerDown(event: PointerEvent): void {
   if (focused instanceof HTMLElement && form.contains(focused)) focused.blur()
 }
 
-function onFocusOut(): void {
-  queueMicrotask(() => {
+function onFocusOut(event: FocusEvent): void {
+  clearFocusOutTimer()
+  // 输入框 → 圆点/箭头/卡片是搜索区内部的焦点转移，不应收起控件。
+  const nextTarget = event.relatedTarget
+  if (nextTarget instanceof Node && searchForm.value?.contains(nextTarget)) return
+  // 原生鼠标事件中，focusout 的微任务可能早于新控件获焦，此时 activeElement 是 body。
+  // relatedTarget 为空时等完整的焦点转移结束再检查，避免在 click 触发前隐藏按钮。
+  focusOutTimer = window.setTimeout(() => {
+    focusOutTimer = undefined
     if (!searchForm.value?.contains(document.activeElement)) {
       if (keepControlsOnBlur) {
         keepControlsOnBlur = false
@@ -77,7 +93,7 @@ function onFocusOut(): void {
       hoveredIndex.value = null
       pickerOpen.value = false
     }
-  })
+  }, 0)
 }
 
 /**
@@ -271,6 +287,7 @@ onMounted(() => {
   window.addEventListener('resize', syncMarker)
 })
 onBeforeUnmount(() => {
+  clearFocusOutTimer()
   document.removeEventListener('pointerdown', onOutsidePointerDown, true)
   window.removeEventListener('resize', syncMarker)
   clearMarkerTimers()
