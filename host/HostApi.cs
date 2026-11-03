@@ -46,6 +46,12 @@ internal sealed class HostApi
             isDev = _form.Options.Dev,
             userDataPath = _form.Options.UserDataDir,
             userDataSource = _form.Options.UserDataSource,
+            // 诊断模式（--debug-ui）：前端据此打开 UI 事件时间线，详见 renderer/src/debug/uiTrace.ts
+            isDebugUi = _form.Options.DebugUi,
+            // 窗口 DPI 与客户区尺寸：和页面里的 devicePixelRatio 一起可以反推页面缩放
+            deviceDpi = _form.DeviceDpi,
+            clientWidth = _form.ClientSize.Width,
+            clientHeight = _form.ClientSize.Height,
         };
 
         return JsonSerializer.Serialize(info, JsonOptions);

@@ -36,6 +36,8 @@ app端/
 │  ├─ StartupOptions.cs        # --dev / --url / --web-root
 │  └─ app.manifest             # PerMonitorV2 DPI
 ├─ tools/make-package.ps1      # ★ 一键产出自包含便携包（dist/ + ZIP）
+├─ tools/ui-check/searchBar.mjs # ★ 搜索栏真实点击回归（CDP，见「验证命令」）
+├─ renderer/src/debug/uiTrace.ts # ★ UI 诊断时间线（--debug-ui / Ctrl+Shift+D）
 ├─ package.json                # 一键脚本
 └─ pnpm-workspace.yaml
 ```
@@ -525,11 +527,37 @@ await searchSongVideos({ song: '晴天', artist: '周杰伦' }, sourcesForMode('
 
 ### 搜索模式圆点与焦点处理
 
-点击搜索框后，点击当前模式的红点可展开模式菜单；点击旁边的小灰点可直接切换模式。
+点击搜索框后，点击当前模式的红点可展开模式菜单；点击旁边的小灰点可直接切换模式。收起只发生在「点到搜索面板之外」：第一次只收卡片/红点，第二次连搜索栏一起收；Esc 只关卡片。
 
 `SearchBar.vue` 的失焦处理先用 `FocusEvent.relatedTarget` 判断焦点是否仍在搜索区内。目标为空时，用可取消的 `setTimeout(..., 0)` 等焦点转移完成后再检查 `document.activeElement`，并在重新获焦和卸载时清理定时器。不能在 `focusout` 中用 `queueMicrotask` 立即据 `activeElement` 收起：原生鼠标点击可能在新按钮获焦前执行微任务，此时焦点暂落 `body`，按钮会在 `click` 前被隐藏，表现为红点点不动。
 
-手动回归：输入框 → 红点打开菜单 → 选择链接模式 → 切回歌曲模式；小灰点直接切换；展开歌手/专辑；Tab 在内部移动与离开搜索区；Esc 关闭菜单；点空白处收起。点击内部控件时，搜索栏应保持展开。
+另外两条和它配套的规矩：
+
+- **切模式后要把焦点交回输入框**：`v-if="mode === 'song'"` 会重建输入框，旧输入框连同焦点一起销毁；焦点掉到 `body` 会走上面那条收起分支。`onModeClick` 里切完 `nextTick(() => mainInput.value?.focus())`。
+- **圆点那一行按「面板内部」处理**：`.mode-button` 只有 28×44px，行内其余位置和下面的说明行（`.mode-caption`）都是空白。`MODE_ROW` 把这一行整行划进搜索面板：点在行内空白不会收起（也不会走到「点空白收起」），只有点到面板外面才收。这一行不可聚焦，点上去会让输入框失焦，所以 pointerdown 里记一笔 `blankInsideModeRow`，让随后的 `focusout` 跳过收起。
+
+手动回归：输入框 → 红点打开菜单 → 选择链接模式 → 切回歌曲模式；小灰点直接切换；展开歌手/专辑；Tab 在内部移动与离开搜索区；Esc 关闭菜单；点外部第一次只关卡片、第二次收起；点圆点行空白保持展开。点击内部控件时，搜索栏应保持展开。自动化版本见下面「验证命令」里的 `tools/ui-check/searchBar.mjs`。
+
+### UI 诊断模式（`--debug-ui` / `Ctrl+Shift+D`）
+
+「只有别人的机器上才出问题」的交互 bug（焦点、时序、点不中）最省事的排查方式：让那人开一次诊断，点几下，把日志发回来。
+
+| 开法 | 场景 |
+| --- | --- |
+| 宿主启动参数 `--debug-ui` | 现场最稳：桌面快捷方式后面加一个参数，或 `MusicPlayer.Host.exe --debug-ui` |
+| `Ctrl+Shift+D` | 运行时开关，右下角出现「诊断中 · 已记录 N 条」小标签，再按一次关闭 |
+| 地址栏 `?uitrace=1` | `pnpm dev:web` 浏览器预览时 |
+| Console `__uiTrace.on()` / `.off()` / `.dump()` | 临时看一眼缓冲里的事件 |
+
+记录内容（见 [`renderer/src/debug/uiTrace.ts`](renderer/src/debug/uiTrace.ts)）：
+
+- 全局 `pointerdown` / `click` / `focusin` / `focusout`（带 `relatedTarget`、`activeElement`）和关键按键（Tab / Esc / Enter / 空格 / 方向键）；
+- 组件主动上报的状态变更：`search.controls.open|close`（带 reason）、`search.picker.open|close`、`search.mode.change`、`search.focusout.keep`（谁把收起拦住了）、`search.mode-row-blank`；
+- 开启时先写一条环境快照：`devicePixelRatio`、视口/屏幕尺寸、`prefers-reduced-motion`（他的机器是不是把动画关了）、宿主 DPI 与客户区尺寸 —— 页面缩放 ≈ `dpr ÷ (deviceDpi / 96)`，「他那边字怎么变小了」一眼就能看出来。
+
+日志落在**数据目录的 `logs\playback.jsonl`**（按 2 MB 滚动），事件名为 `ui_trace` / `ui_trace_on` / `ui_trace_off`。让对端点设置里的「打开诊断日志」把该目录发回来即可；`jq "select(.event==\"ui_trace\")"` 或直接搜 `ui_trace` 就能看到时间线。
+
+> 诊断只写日志，不改任何交互行为；宿主没连上（浏览器预览）时 `recordPlaybackLog` 走降级空实现，`__uiTrace.dump()` 仍然可用。
 
 ### 搜索的站点注册表（加一个站点只改几处）
 
@@ -551,6 +579,7 @@ await searchSongVideos({ song: '晴天', artist: '周杰伦' }, sourcesForMode('
 
 ```powershell
 pnpm --filter renderer test # 测试使用 Node 22.18+ 的 TypeScript 类型擦除
+node tools/ui-check/searchBar.mjs --chrome "<chrome.exe 路径>" # 搜索栏真实点击回归（先 pnpm dev:web）
 dotnet run --project tools/media-search-check # 本地响应解析检查，无网络请求（含 settings.json 读写与 Cookie 文件体检）
 dotnet run --project tools/media-search-check -- --live # 实际请求两站，各取 3 条链接
 dotnet run --project tools/media-search-check -- --resolve-bili https://www.bilibili.com/video/BV183DFBkEBV # 下载转码验证，缓存到系统临时目录 MusicPlayerBiliProbe
@@ -645,3 +674,4 @@ dotnet run --project tools/media-search-check -- --resolve-bili https://www.bili
 - **远程调试端口要避开 Windows 保留段**：本机 `netsh int ipv4 show excludedportrange protocol=tcp` 里有 `9960–10059` 等保留区间，`--debug-port` 选到里面会让 `TcpListener` 绑定失败，宿主按设计把端口降级成 `0`（调试直接关闭，且没有任何报错）。选 `92xx` 之类没被保留的端口即可。
 - **自定义 scheme 里加载 `http://` 媒体会被混合内容拦掉**：`app://` 是 secure origin，Chromium 会把 http 媒体「自动升级成 https」再失败（`net::ERR_ABORTED`，上游服务端根本收不到请求）。解决方案是 `stream://` 宿主代理（见上文），不要指望 `--allow-running-insecure-content`。
 - **CefSharp 资源处理器优先用同步 `Open`**：异步 `callback.Continue()` 那条路在本版本不会继续调用 `GetResponseHeaders`，结果就是元素一直 `readyState=0` 直到超时。
+- **`focusout` 里不要用微任务判断焦点**：原生点击从输入框移向圆点时，微任务会在新按钮获焦之前执行，此时 `activeElement` 还是 `body`；照此收起会让圆点在 `click` 前被隐藏，点击落到下面的页面上 —— 表现就是「点红点/灰点，整个搜索区缩回，选模式卡片不弹」。这种时序问题**换台机器/换种点击速度才出现**，用 CDP 注入的假点击还可能复现不出来（假阴性），排查靠 `--debug-ui` 的事件时间线 + 真实鼠标操作（见「搜索模式圆点与焦点处理」「UI 诊断模式」）。

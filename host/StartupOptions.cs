@@ -12,6 +12,7 @@ namespace MusicPlayer.Host;
 ///   --user-data &lt;dir&gt;       指定数据目录（CEF profile / 缓存 / localStorage）
 ///   --pick-user-data          启动时强制弹框重选数据目录（选了才记住）
 ///   --debug-port &lt;port&gt;     指定远程调试端口（dev 默认 9222；被占用时换一个）
+///   --debug-ui                打开 UI 诊断模式：把交互事件时间线写进 logs（排查「只有别人机器上才出问题」）
 ///
 /// 数据目录怎么定，见 <see cref="DataLocation"/>：命令行 / 环境变量 / userdata.txt /
 /// portable.txt / 默认 D:\MusicPlayerData / 首次启动弹框选择 / LOCALAPPDATA 兜底。
@@ -44,6 +45,9 @@ internal sealed class StartupOptions
     /// <summary>远程调试端口；null 表示 dev 时用默认 9222，非 dev 关闭</summary>
     public int? DebugPort { get; private init; }
 
+    /// <summary>UI 诊断模式（`--debug-ui`）：前端据此打开交互事件时间线，写进 logs</summary>
+    public bool DebugUi { get; private init; }
+
     public static StartupOptions Parse(string[] args, DirectoryPicker? pickDirectory = null)
     {
         var dev = false;
@@ -53,6 +57,7 @@ internal sealed class StartupOptions
         string? proxy = null;
         int? debugPort = null;
         var pickUserData = false;
+        var debugUi = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -64,6 +69,9 @@ internal sealed class StartupOptions
                     break;
                 case "--pick-user-data":
                     pickUserData = true;
+                    break;
+                case "--debug-ui":
+                    debugUi = true;
                     break;
                 case "--url" when i + 1 < args.Length:
                     url = args[++i];
@@ -112,6 +120,7 @@ internal sealed class StartupOptions
             UserDataSource = source,
             Proxy = proxy,
             DebugPort = debugPort,
+            DebugUi = debugUi,
         };
     }
 

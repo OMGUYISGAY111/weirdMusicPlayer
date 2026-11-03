@@ -4,11 +4,14 @@ import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
 import { initHostBridge, host } from './bridge/host'
+import { initUiTrace } from './debug/uiTrace'
 import './styles/main.css'
 
 async function bootstrap(): Promise<void> {
   // 必须在挂载前完成：CefSharp 的绑定是异步的，绑定好之后 window.hostApi 才存在
   await initHostBridge()
+  // UI 诊断时间线（--debug-ui / ?uitrace=1 / Ctrl+Shift+D），没开时是空转
+  void initUiTrace()
   window.addEventListener('error', (event) => {
     void host.recordPlaybackLog('window_error', { message: event.message, stack: event.error?.stack, source: event.filename, line: event.lineno }, 'error')
   })

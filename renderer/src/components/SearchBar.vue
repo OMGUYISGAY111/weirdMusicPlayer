@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 import { SEARCH_MODES } from '@/search/modes'
+import { traceUi } from '@/debug/uiTrace'
 
 withDefaults(defineProps<{ busy?: boolean; canSubmit?: boolean }>(), { busy: false, canSubmit: true })
 const song = defineModel<string>('song', { default: '' })
@@ -33,18 +34,46 @@ function clearFocusOutTimer(): void {
 
 function onFocusIn(): void {
   clearFocusOutTimer()
-  showControls.value = true
+  openControls('focusin')
   keepControlsOnBlur = false
 }
 
 function selectSearch(event: MouseEvent): void {
-  closePicker()
-  showControls.value = true
+  closePicker(false, 'capsule-click')
+  openControls('capsule-click')
   if (event.target === event.currentTarget) mainInput.value?.focus()
+}
+
+/**
+ * 搜索面板的展开/收起只有这两个入口，reason 会进 UI 诊断时间线
+ * （`--debug-ui` / Ctrl+Shift+D，见 debug/uiTrace.ts）——
+ * 远端机器上「面板莫名其妙关了」时，日志里直接写着是谁、为什么收的。
+ */
+function openControls(reason: string): void {
+  if (!showControls.value) traceUi('search.controls.open', { reason })
+  showControls.value = true
+}
+
+function closeControls(reason: string): void {
+  if (!showControls.value) return
+  traceUi('search.controls.close', { reason })
+  showControls.value = false
+  hoveredIndex.value = null
+  pickerOpen.value = false
 }
 
 /** 这些地方有自己的点击行为：输入胶囊、模式圆点、展开箭头、歌名/专辑输入框、选择卡片本身。 */
 const INTERACTIVE = '.search-capsule, .mode-button, .details-toggle, .optional-fields, .mode-picker'
+
+/**
+ * 模式圆点那一行（`.mode-switch`）和它下面的说明行：整行都算搜索面板的一部分。
+ * 圆点按钮只有 28px 宽，行内其余位置不该等同于「点空白收起」，否则差几像素就整块关掉。
+ * 这一行不可聚焦，点上去会让输入框失焦，所以还要让随后的 focusout 跳过收起。
+ */
+const MODE_ROW = '.mode-switch, .mode-caption'
+
+/** 本次 pointerdown 落在模式行空白处：随后的 focusout 不要收起面板。 */
+let blankInsideModeRow = false
 
 function isInteractiveTarget(target: Node): boolean {
   const el = target instanceof Element ? target : target.parentElement
@@ -58,40 +87,64 @@ function onOutsidePointerDown(event: PointerEvent): void {
   const target = event.target
   const form = searchForm.value
   if (!(target instanceof Node) || !form) return
+  // 这个标记只服务「这一次点击引发的 focusout」，每次按下都先清掉。
+  blankInsideModeRow = false
   // 点卡片、红点、胶囊、圆点、箭头或输入框：交给它们自己的点击处理。
   if (isInteractiveTarget(target)) return
+  const el = target instanceof Element ? target : target.parentElement
+  if (el?.closest(MODE_ROW)) {
+    // 点圆点那一行的空白：保持展开，别把「点歪几像素」变成「整个搜索区缩回」。
+    blankInsideModeRow = true
+    hoveredIndex.value = null
+    traceUi('search.mode-row-blank', { target: el.tagName.toLowerCase() })
+    return
+  }
   if (pickerOpen.value) {
     // 卡片展开时点外面的空白：只收起卡片，搜索栏保持展开（红点回到原位，和图2 一致）。
     keepControlsOnBlur = true
     hoveredIndex.value = null
-    closePicker()
+    closePicker(false, 'outside-pointerdown')
     return
   }
   // 卡片收起后点空白处（搜索栏里的空白也算）：连搜索栏一起收起，红点淡出。
-  showControls.value = false
-  hoveredIndex.value = null
-  pickerOpen.value = false
+  closeControls('pointerdown:blank')
   const focused = document.activeElement
   if (focused instanceof HTMLElement && form.contains(focused)) focused.blur()
 }
 
+/**
+ * 输入框 → 圆点 / 箭头 / 卡片 属于搜索区内部的焦点转移，不能收起控件。
+ *
+ * 注意别改回 `queueMicrotask`：原生鼠标点击时，`focusout` 的微任务可能早于
+ * 新按钮获焦，此刻 `document.activeElement` 还是 `body`。如果这时就收起，
+ * 圆点会在 `click` 触发之前被隐藏，点击落到下面的页面上 —— 表现就是
+ * 「点红点/灰点，整个搜索区缩回，选模式卡片不弹」。
+ * 所以先用 `relatedTarget` 判断内部转移；拿不到目标时用可取消的 `setTimeout(0)`
+ * 等这次焦点移动彻底结束后再检查。
+ */
 function onFocusOut(event: FocusEvent): void {
   clearFocusOutTimer()
-  // 输入框 → 圆点/箭头/卡片是搜索区内部的焦点转移，不应收起控件。
   const nextTarget = event.relatedTarget
-  if (nextTarget instanceof Node && searchForm.value?.contains(nextTarget)) return
-  // 原生鼠标事件中，focusout 的微任务可能早于新控件获焦，此时 activeElement 是 body。
-  // relatedTarget 为空时等完整的焦点转移结束再检查，避免在 click 触发前隐藏按钮。
+  if (nextTarget instanceof Node && searchForm.value?.contains(nextTarget)) {
+    traceUi('search.focusout.keep', { reason: 'focus-inside' })
+    return
+  }
+
   focusOutTimer = window.setTimeout(() => {
     focusOutTimer = undefined
+    // 刚才那一下点的是圆点行的空白：面板故意保持展开，别在这里又收起来。
+    if (blankInsideModeRow) {
+      blankInsideModeRow = false
+      traceUi('search.focusout.keep', { reason: 'mode-row-blank' })
+      return
+    }
     if (!searchForm.value?.contains(document.activeElement)) {
       if (keepControlsOnBlur) {
         keepControlsOnBlur = false
+        traceUi('search.focusout.keep', { reason: 'picker-just-closed' })
         return
       }
-      showControls.value = false
-      hoveredIndex.value = null
-      pickerOpen.value = false
+      closeControls('focusout:left-panel')
     }
   }, 0)
 }
@@ -188,7 +241,8 @@ async function openPicker(): Promise<void> {
   clearMarkerTimers()
   markerLanded.value = false
   hoveredIndex.value = null
-  showControls.value = true
+  openControls('mode-dot')
+  traceUi('search.picker.open', { mode: mode.value })
   // 先在隐藏状态下把红点摆到搜索栏中心（此时没有过渡），再显示并飞向卡片。
   const barPoint = barMarkerPoint()
   markerPoint.value = barPoint ?? markerPoint.value
@@ -202,8 +256,9 @@ async function openPicker(): Promise<void> {
   pickerOptions.value[Math.max(activeIndex.value, 0)]?.focus()
 }
 
-function closePicker(restoreFocus = false): void {
+function closePicker(restoreFocus = false, reason = 'unknown'): void {
   if (!pickerOpen.value) return
+  traceUi('search.picker.close', { reason })
   pickerOpen.value = false
   markerLanded.value = false
   hoveredIndex.value = null
@@ -231,24 +286,29 @@ function onMarkerClick(): void {
  */
 function onModeClick(key: 'song' | 'link'): void {
   if (key !== mode.value) {
+    traceUi('search.mode.change', { from: mode.value, to: key, by: 'dot-click' })
     mode.value = key
     if (pickerOpen.value) nextTick(() => moveMarker(slotMarkerPoint(activeIndex.value)))
+    // 切模式会按 v-if 重建输入框，旧输入框连同焦点一起被销毁；把焦点交回新输入框，
+    // 搜索栏保持展开，切完就能直接打字（否则焦点掉到 body，会走 focusout 的收起分支）。
+    nextTick(() => mainInput.value?.focus())
     return
   }
-  if (pickerOpen.value) closePicker(true)
+  if (pickerOpen.value) closePicker(true, 'dot-click-toggle')
   else openPicker()
 }
 
 function chooseMode(key: 'song' | 'link'): void {
+  traceUi('search.mode.change', { from: mode.value, to: key, by: 'picker' })
   mode.value = key
-  closePicker(true)
+  closePicker(true, 'mode-chosen')
 }
 
 function onPickerKey(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     event.preventDefault()
     event.stopPropagation()
-    closePicker(true)
+    closePicker(true, 'escape')
     return
   }
   if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
@@ -305,7 +365,7 @@ function moveMode(event: KeyboardEvent): void {
 <template>
   <form ref="searchForm" class="search-control" :class="{ 'show-controls': showControls, 'picker-open': pickerOpen, 'marker-visible': markerVisible && !markerLanded }" role="search"
     @focusin="onFocusIn" @focusout="onFocusOut" @submit.prevent="$emit('submit')"
-    @keydown.esc="pickerOpen && closePicker(true)">
+    @keydown.esc="pickerOpen && closePicker(true, 'escape')">
     <div class="search-capsule" :aria-busy="busy" @click="selectSearch">
       <button class="search-submit" type="submit" :disabled="!canSubmit || busy" :aria-label="busy ? '搜索中' : mode === 'song' ? '搜索歌曲' : '识别视频链接'" :title="mode === 'song' ? '搜索歌曲' : '识别视频链接'">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
@@ -368,7 +428,7 @@ function moveMode(event: KeyboardEvent): void {
 
     <Transition name="picker">
       <div v-if="pickerOpen" :id="pickerId" class="mode-picker" role="dialog"
-        aria-label="选择搜索模式" @keydown="onPickerKey" @mousedown.prevent @click.self="closePicker(true)">
+        aria-label="选择搜索模式" @keydown="onPickerKey" @mousedown.prevent @click.self="closePicker(true, 'card-blank')">
         <ul class="picker-list" role="radiogroup" aria-label="搜索模式">
           <li v-for="(item, index) in modes" :key="item.key">
             <button type="button" class="picker-option" :class="{ current: mode === item.key }" role="radio"

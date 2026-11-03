@@ -26,6 +26,13 @@ export interface HostInfo {
   userDataPath: string
   /** 数据目录来自哪里：命令行 / 环境变量 / 便携模式 / 默认 LOCALAPPDATA */
   userDataSource: string
+  /** 宿主以 `--debug-ui` 启动：前端自动打开 UI 诊断时间线（见 debug/uiTrace.ts） */
+  isDebugUi?: boolean
+  /** 窗口 DPI（96 = 100%）。和 `devicePixelRatio` 一起可以反推页面缩放 */
+  deviceDpi?: number
+  /** 窗口客户区尺寸，排查「他那台机器布局不一样」时用 */
+  clientWidth?: number
+  clientHeight?: number
 }
 
 /** 与 C# `HostApi` 一一对应（方法名由 PascalCase 转 camelCase） */
