@@ -72,7 +72,7 @@ async function onExport(): Promise<void> {
     <header class="head">
       <nav class="nav">
         <RouterLink to="/">← 首页</RouterLink>
-        <RouterLink to="/player">播放器调试页</RouterLink>
+        <!-- <RouterLink to="/player">播放器调试页</RouterLink> -->
       </nav>
       <h1>搜视频 · 找链接 · 直接听</h1>
       <p>

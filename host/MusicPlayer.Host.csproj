@@ -21,6 +21,9 @@
 
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
     <InvariantGlobalization>false</InvariantGlobalization>
+
+    <!-- 前端产物目录；打包脚本 / CI 可用 -p:RendererDist=<目录> 指向别处 -->
+    <RendererDist Condition="'$(RendererDist)' == ''">$(MSBuildProjectDirectory)\..\renderer\dist</RendererDist>
   </PropertyGroup>
 
   <ItemGroup>
@@ -28,12 +31,28 @@
   </ItemGroup>
 
   <!-- 把 renderer/dist 一起拷到输出目录的 web/ 下，宿主优先加载它（单文件分发就够用） -->
-  <Target Name="CopyRendererDist" AfterTargets="Build" Condition="Exists('$(MSBuildProjectDirectory)\..\renderer\dist\index.html')">
+  <Target Name="CopyRendererDist" AfterTargets="Build" Condition="Exists('$(RendererDist)\index.html')">
     <ItemGroup>
-      <RendererDistFiles Include="$(MSBuildProjectDirectory)\..\renderer\dist\**\*.*" />
+      <RendererDistFiles Include="$(RendererDist)\**\*.*" />
     </ItemGroup>
     <Copy SourceFiles="@(RendererDistFiles)" DestinationFiles="@(RendererDistFiles->'$(OutDir)web\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
-    <Message Importance="high" Text="已复制前端产物到 $(OutDir)web" />
+    <Message Importance="high" Text="已复制前端产物到 $(OutDir)web（来源 $(RendererDist)）" />
+  </Target>
+
+  <!--
+    publish 不会自动带上 OutDir 里自定义拷进来的文件，所以单独登记到发布清单，
+    保证 dist（便携包）里始终有 web/ 目录，否则目标机器双击 exe 会找不到前端产物。
+  -->
+  <Target Name="PublishRendererDist" AfterTargets="ComputeFilesToPublish" Condition="Exists('$(RendererDist)\index.html')">
+    <ItemGroup>
+      <RendererPublishFiles Include="$(RendererDist)\**\*.*" />
+      <ResolvedFileToPublish Include="@(RendererPublishFiles)">
+        <RelativePath>web\%(RecursiveDir)%(Filename)%(Extension)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+    <Message Importance="high" Text="已把前端产物加入发布清单：web\（来源 $(RendererDist)）" />
   </Target>
 
 </Project>

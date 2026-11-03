@@ -68,6 +68,10 @@ export interface CefHostApi {
   checkCookiesFile(path: string): Promise<string>
   /** 保存设置（JSON 字符串），返回 { ok, error, warning, settings } */
   saveSettings(json: string): Promise<string>
+  /** 数据目录信息（当前值 / 来源 / userdata.txt / 是否被启动参数覆盖） */
+  getDataDirectory(): Promise<string>
+  /** 弹文件夹选择框换数据目录，返回 { ok, canceled, dir, saved, restartRequired, warning, error } */
+  chooseDataDirectory(): Promise<string>
   /** 把整库播放列表写到用户选的文件，返回 { ok, canceled, path, error } */
   exportPlaylists(json: string): Promise<string>
   /** 选播放列表文件并读回文本，返回 { ok, canceled, path, fileName, text, error } */
@@ -166,6 +170,39 @@ export interface SettingsSnapshot {
 export interface SettingsInput extends CookieSelection {
   /** 同时写入用户级环境变量，方便命令行工具复用 */
   persistToUserEnvironment: boolean
+}
+
+/** 宿主 GetDataDirectory() 返回的数据目录信息 */
+export interface DataDirectoryInfo {
+  ok: boolean
+  /** 当前生效的数据目录：CEF profile、播放列表、缓存、日志、settings.json 都在这里 */
+  current: string
+  /** 目录来自哪里：命令行 / 环境变量 / userdata.txt / 便携模式 / 默认位置 / 回退 LOCALAPPDATA */
+  source: string
+  /** 记用户选择的文件（exe 同目录 userdata.txt）绝对路径 */
+  configPath: string
+  configExists: boolean
+  /** userdata.txt 里记的路径，没配过为空 */
+  savedPath: string
+  /** exe 同目录有 portable.txt（数据落在 exe\data） */
+  portable: boolean
+  defaultPath: string
+  /** 被启动参数覆盖时的描述；此时在设置面板里改目录不会生效 */
+  overriddenBy: string
+}
+
+/** 换数据目录的结果 */
+export interface ChooseDataDirectoryResult {
+  ok: boolean
+  /** 用户点了取消 */
+  canceled: boolean
+  dir: string
+  /** 是否写进了 userdata.txt；false 表示只是本次生效 */
+  saved: boolean
+  /** CEF profile 路径在进程启动时确定，改完必须重启 */
+  restartRequired: boolean
+  warning: string
+  error: string
 }
 
 export interface SaveSettingsResult {
@@ -268,11 +305,23 @@ const MOCK_SETTINGS: SettingsSnapshot = {
   loadWarning: '',
 }
 
+/** 浏览器预览下的数据目录占位（没有宿主，拿不到真实路径） */
+const MOCK_DATA_DIRECTORY: DataDirectoryInfo = {
+  ok: true,
+  current: '（浏览器预览模式没有本地数据目录）',
+  source: '浏览器预览',
+  configPath: '',
+  configExists: false,
+  savedPath: '',
+  portable: false,
+  defaultPath: 'D:\\MusicPlayerData',
+  overriddenBy: '',
+}
+
 /**
  * 在挂载 Vue 之前调用：绑定 CefSharp 对象。
  * 浏览器环境直接返回 false，不影响页面。
- */
-export async function initHostBridge(): Promise<boolean> {
+ */export async function initHostBridge(): Promise<boolean> {
   if (typeof window === 'undefined') return false
 
   const cef = window.CefSharp
@@ -488,6 +537,33 @@ export const host = {
       return JSON.parse(raw) as SaveSettingsResult
     } catch (error) {
       return { ok: false, error: String(error), warning: '', settings: null }
+    }
+  },
+
+  /** 读取数据目录信息；浏览器预览下返回占位值（inHost=false） */
+  async getDataDirectory(): Promise<DataDirectoryInfo> {
+    const raw = await invoke<string | null>((api) => api.getDataDirectory(), null)
+    if (!raw) return MOCK_DATA_DIRECTORY
+    try {
+      return { ...MOCK_DATA_DIRECTORY, ...(JSON.parse(raw) as Partial<DataDirectoryInfo>) }
+    } catch (error) {
+      console.error('[bridge] 解析数据目录信息失败', error)
+      return MOCK_DATA_DIRECTORY
+    }
+  },
+
+  /** 弹宿主文件夹选择框换数据目录；改完需要重启播放器才生效 */
+  async chooseDataDirectory(): Promise<ChooseDataDirectoryResult> {
+    const empty: ChooseDataDirectoryResult = {
+      ok: false, canceled: false, dir: '', saved: false, restartRequired: false,
+      warning: '', error: '浏览器预览模式没有宿主，无法更换数据目录',
+    }
+    const raw = await invoke<string | null>((api) => api.chooseDataDirectory(), null)
+    if (!raw) return empty
+    try {
+      return JSON.parse(raw) as ChooseDataDirectoryResult
+    } catch (error) {
+      return { ...empty, error: String(error) }
     }
   },
 

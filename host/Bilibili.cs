@@ -229,27 +229,18 @@ internal static class FfmpegLocator
             return fromEnv;
         }
 
-        // PATH
-        var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-        foreach (var directory in path.Split(Path.PathSeparator))
+        // 便携包：exe 同目录 / exe\bin 里的 ffmpeg.exe
+        var bundled = BundledTools.FindLocal("ffmpeg.exe");
+        if (bundled != null)
         {
-            if (string.IsNullOrWhiteSpace(directory))
-            {
-                continue;
-            }
+            return bundled;
+        }
 
-            try
-            {
-                var candidate = Path.Combine(directory.Trim(), "ffmpeg.exe");
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
-            }
-            catch
-            {
-                // 非法路径片段，跳过
-            }
+        // PATH
+        var onPath = BundledTools.FindOnPath("ffmpeg.exe");
+        if (onPath != null)
+        {
+            return onPath;
         }
 
         // WinGet 安装的常见位置

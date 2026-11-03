@@ -12,7 +12,9 @@
     "build:web": "pnpm --filter renderer build",
     "build:host": "dotnet build host/MusicPlayer.Host.csproj -c Release",
     "start": "dotnet run --project host/MusicPlayer.Host.csproj",
-    "package": "pnpm build:web && dotnet publish host/MusicPlayer.Host.csproj -c Release -o dist",
+    "package": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/make-package.ps1",
+    "package:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File tools/make-package.ps1",
+    "package:fast": "pnpm build:web && dotnet publish host/MusicPlayer.Host.csproj -c Release -o dist",
     "typecheck": "pnpm --filter renderer typecheck",
     "clean": "node -e \"const fs=require('fs');for(const p of ['renderer/dist','host/bin','host/obj','dist'])fs.rmSync(p,{recursive:true,force:true})\""
   },

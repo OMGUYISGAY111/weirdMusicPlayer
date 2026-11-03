@@ -29,9 +29,13 @@ app端/
 │  ├─ MainForm.cs              # 主窗口 + 注册 hostApi
 │  ├─ HostApi.cs               # ★ 暴露给 JS 的 C# 方法
 │  ├─ Settings.cs              # ★ settings.json 读写、Cookie 文件体检
+│  ├─ DataLocation.cs          # ★ 数据目录解析（userdata.txt / portable.txt / 默认 / 兜底）
+│  ├─ DataDirectoryDialog.cs   # ★ 首次启动「选择数据目录」对话框
+│  ├─ BundledTools.cs          # ★ ffmpeg / yt-dlp 的查找顺序（便携包 bin\）
 │  ├─ WebTarget.cs             # dev server / 本地 dist 的选择逻辑
 │  ├─ StartupOptions.cs        # --dev / --url / --web-root
 │  └─ app.manifest             # PerMonitorV2 DPI
+├─ tools/make-package.ps1      # ★ 一键产出自包含便携包（dist/ + ZIP）
 ├─ package.json                # 一键脚本
 └─ pnpm-workspace.yaml
 ```
@@ -45,6 +49,83 @@ app端/
 
 CEF 二进制由 NuGet 包 `CefSharp.WinForms.NETCore` 自带（约 300MB），**不需要自己下载或编译 CEF，也不需要 Visual Studio / MSVC**。
 
+> 上面是**开发机**的要求。只想把成品给别人用，看下一节，目标机器**不需要**装 .NET。
+
+## 导出给别的电脑用（便携包）
+
+一条命令：
+
+```powershell
+pnpm package        # = tools/make-package.ps1
+```
+
+它会依次做四件事：
+
+1. `pnpm --filter renderer build` —— 构建前端；
+2. `dotnet publish -c Release -r win-x64 --self-contained true` —— **自包含发布**，.NET 运行时和 CEF 一起进 `dist\`；
+3. 把 `ffmpeg.exe` 拷进 `dist\bin\`（B站 AAC 音轨必须靠它实时转码），找到**独立版** `yt-dlp.exe` 也一并拷进去；
+4. 写一份 `dist\使用说明.txt`，然后压缩成 `artifacts\music-player-<版本>-win-x64.zip`。
+
+产物两份，二选一给人都行：
+
+| 产物 | 用法 | 实测体积 |
+| --- | --- | --- |
+| `dist\` | 整个目录拷走（或在别的机器上直接运行），双击 `MusicPlayer.Host.exe` | 766 MB |
+| `artifacts\music-player-<版本>-win-x64.zip` | 发给别人；资源管理器「全部解压缩」后双击 exe | 321 MB |
+
+> 体积大头是 CEF（约 500 MB）和 ffmpeg full build（217 MB）。想瘦身见下方 `-FfmpegPath`。
+
+常用参数：
+
+```powershell
+pwsh -File tools/make-package.ps1 -NoZip      # 只出 dist\，本地先验一遍
+pwsh -File tools/make-package.ps1 -NoWebBuild # 前端已构建过，省掉一次
+pwsh -File tools/make-package.ps1 -NoFfmpeg   # 不打 ffmpeg（包小一点，B站 AAC 播不了）
+pwsh -File tools/make-package.ps1 -FfmpegPath D:\ffmpeg-essentials\ffmpeg.exe  # 换精简 ffmpeg
+```
+
+`ffmpeg` 只需要 **AAC 解码 + WAV 输出**，装 `ffmpeg-release-essentials` 一类的精简构建就够，体积能小一半以上。
+
+**目标机器要求**（包里已含 .NET 运行时，只有两条）：
+
+- Windows 10 / 11 x64；
+- VC++ 2015–2022 可再发行组件 x64（CefSharp 依赖，绝大多数机器已有；缺了会提示 `vcruntime140.dll`，装 [vc_redist.x64.exe](https://aka.ms/vs/17/release/vc_redist.x64.exe) 即可）。
+
+**外部工具怎么被找到**（`host/BundledTools.cs`）——按顺序命中：
+
+1. 环境变量 `MUSICPLAYER_FFMPEG` / `MUSICPLAYER_YTDLP`；
+2. exe 同目录；
+3. exe 同目录的 `bin\`；
+4. `PATH`；
+5. 安装位置兜底（WinGet 的 `Gyan.FFmpeg*`、`%APPDATA%\Python\Python313\Scripts`、`python -m yt_dlp`）。
+
+所以给别人的包只要把 `ffmpeg.exe` / `yt-dlp.exe` 丢进 exe 旁边或 `bin\` 就行，**不用改 PATH、不用重启**。
+
+| 依赖 | 是否内置 | 不装的后果 |
+| --- | --- | --- |
+| `ffmpeg` | 自动带上（本机找得到时） | B站音轨（AAC）无法转码，播不了 |
+| `yt-dlp` | 只认独立 exe（≥ 2 MB），本机没装就不内置 | YouTube 搜索 / 播放不可用，B站不受影响 |
+| .NET 8 桌面运行时 | 已随包（自包含发布） | — |
+
+> **yt-dlp 有个坑**：`pip install --user` 装出来的 `%APPDATA%\Python\Python313\Scripts\yt-dlp.exe` 只有 0.1 MB，是个「启动垫片」——它靠本机 Python 跑 `yt_dlp` 模块，打进包里到没装 Python 的机器上直接不能用。脚本已经按体积把它过滤掉了；要内置就用独立 exe 版（约 17 MB）：
+>
+> ```powershell
+> Invoke-WebRequest https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe -OutFile dist\bin\yt-dlp.exe
+> ```
+>
+> 或者干脆不内置，让使用者自己丢进 `bin\`；`dist\使用说明.txt` 里已经把这条写好了。
+
+**别忘了这几件事**：
+
+- 不能只把 exe 拷走：`web\`（前端产物）、`libcef.dll`、`CefSharp.BrowserSubprocess.exe`、`locales\` 等必须跟 exe 同目录。
+- 别放在 `C:\Program Files` 之类无写权限的目录：程序目录没写权限时连 `userdata.txt` 都存不下。
+- **第一次启动会让使用者选数据目录**（默认 `D:\MusicPlayerData`），选择记在 exe 同目录的 `userdata.txt`；整个文件夹拷走时这个选择跟着走，到了新机器如果那个盘没有，会自动重新弹框。没有 D 盘又不选的话回退 `%LOCALAPPDATA%\MusicPlayer\ver2`。
+- 想要「整个文件夹拷进 U 盘就走」的纯便携模式：在 exe 同目录放一个空文件 `portable.txt`，数据会落在该目录的 `data\`（详见「数据目录」一节）。
+- 打包后建议在**没装 SDK 的机器**上双击验一次：首页能出、能播本地文件、B站能播（有 ffmpeg 时）。
+- 还想要 `setup.exe` 安装包（开始菜单 / 卸载项）？本仓库暂未做，`dist\` 可直接喂给 Inno Setup 或 WiX 生成。
+
+> 2026-11-01 实测：`pnpm package` 跑通，`dist\MusicPlayer.Host.exe --user-data <可写目录>` 能正常出窗口、CEF profile 与 `logs\` 都自动建好。注意**数据目录必须可写**，不可写时启动会直接弹「无法创建数据目录 / 数据目录不可写」并退出，此时用 `--user-data` 指到可写位置。
+
 ## 常用命令
 
 | 命令 | 作用 |
@@ -54,7 +135,8 @@ CEF 二进制由 NuGet 包 `CefSharp.WinForms.NETCore` 自带（约 300MB），*
 | `pnpm dev:web` | 只起 Vite，用浏览器预览页面（此时 `hostApi` 走降级模拟值） |
 | `pnpm build` | 打包前端 + 编译宿主（Release） |
 | `pnpm start` | 直接跑宿主，加载本地 `renderer/dist`，不需要 dev server |
-| `pnpm package` | 产出可分发目录 `dist/` |
+| `pnpm package` | ★ 产出**便携包**（见下节）：`dist\` + `artifacts\music-player-<版本>-win-x64.zip`，自带 .NET 运行时 |
+| `pnpm package:fast` | 旧行为：只发布到 `dist\`，依赖目标机器已装 .NET 8 桌面运行时 |
 | `pnpm typecheck` | 只做 Vue/TS 类型检查 |
 | `pnpm clean` | 清理构建产物 |
 
@@ -92,7 +174,7 @@ const raw = await window.hostApi.getHostInfo()
 - 浏览器里（`pnpm dev:web`）没有宿主，桥接层自动降级成模拟值，页面照常开发。
 - UI 相关调用必须切到 WinForms 线程（`HostApi.OnUiThread`）。
 
-已有方法：`getHostInfo` / `echo` / `minimize` / `toggleMaximize` / `closeWindow` / `openDevTools` / `setZoomLevel` / `openUserDataFolder` / `openLogFolder` / `recordPlaybackLog` / `registerStream` / `searchMedia` / `getVideoInfo` / `resolveMedia` / `openExternalUrl` / `getSettings` / `pickYouTubeCookiesFile` / `checkCookiesFile` / `saveSettings` / `exportPlaylists` / `importPlaylists`。
+已有方法：`getHostInfo` / `echo` / `minimize` / `toggleMaximize` / `closeWindow` / `openDevTools` / `setZoomLevel` / `openUserDataFolder` / `openLogFolder` / `recordPlaybackLog` / `registerStream` / `searchMedia` / `getVideoInfo` / `resolveMedia` / `openExternalUrl` / `getSettings` / `pickYouTubeCookiesFile` / `checkCookiesFile` / `saveSettings` / `getDataDirectory` / `chooseDataDirectory` / `exportPlaylists` / `importPlaylists`。
 
 ### 新增一个宿主能力
 
@@ -375,9 +457,9 @@ Cookie 是登录凭据，不要上传或提交到仓库；过期后需重新导�
 #### 设置面板（右上角齿轮）
 
 - 入口：首页、搜索页、播放器调试页的「设置」按钮（搜索页的在搜索栏所在 header 右侧，与搜索胶囊垂直居中）；`Esc` 或点遮罩关闭。
-- 目前只有「YouTube 登录（Cookie）」一项（不配置 / Cookie 文件 / 浏览器），后续设置项按同样方式往面板里加。
+- 目前两项：**数据目录**（当前目录 / 来源 / 打开目录 / 更改…，改了要重启生效）和 **YouTube 登录（Cookie）**（不配置 / Cookie 文件 / 浏览器）。后续设置项按同样方式往面板里加。
 - 保存位置：数据目录下的 `settings.json`（默认 `D:\MusicPlayerData\settings.json`）。删掉它或把选项改回「不配置」就回到未配置状态。
-- 宿主接口：`host.getSettings()` / `host.pickYouTubeCookiesFile()` / `host.checkCookiesFile(path)` / `host.saveSettings({ youtubeCookiesFile, youtubeCookiesBrowser, persistToUserEnvironment })`，都返回 JSON 字符串，前端只渲染，不自己判断优先级。
+- 宿主接口：`host.getSettings()` / `host.pickYouTubeCookiesFile()` / `host.checkCookiesFile(path)` / `host.saveSettings({ youtubeCookiesFile, youtubeCookiesBrowser, persistToUserEnvironment })` / `host.getDataDirectory()` / `host.chooseDataDirectory()`，都返回 JSON 字符串，前端只渲染，不自己判断优先级。
 
 **代理与「被 Google 拦」的排查顺序**（本机踩过的完整路径）：
 
@@ -501,20 +583,36 @@ dotnet run --project tools/media-search-check -- --resolve-bili https://www.bili
 
 ## 数据目录（CEF profile / 缓存 / localStorage）
 
-默认在 **`D:\MusicPlayerData`**，也可以改到任意盘。优先级从高到低：
+默认在 **`D:\MusicPlayerData`**，但**用户自己可以改**：第一次启动会弹框让你选位置，之后随时能在「设置 → 数据目录」里换。优先级从高到低：
 
 | 优先级 | 方式 | 例子 |
 | --- | --- | --- |
 | 1 | 命令行 `--user-data <dir>` | `MusicPlayer.Host.exe --user-data E:\MusicPlayerData` |
 | 2 | 环境变量 `MUSICPLAYER_USER_DATA` | `$env:MUSICPLAYER_USER_DATA='E:\MusicPlayerData'` |
-| 3 | 便携模式：exe 同目录放一个 `portable.txt`（空文件也行） | 数据落在 `exe目录\data` |
-| 4 | 默认 | `D:\MusicPlayerData` |
+| 3 | 用户在设置面板 / 首次启动时选过的目录（记在 exe 同目录 `userdata.txt`） | 双击启动的正常路径 |
+| 4 | 便携模式：exe 同目录放一个 `portable.txt`（空文件也行） | 数据落在 `exe目录\data` |
+| 5 | 默认 `D:\MusicPlayerData` | 已存在且可写时静默沿用，不弹框 |
+| 6 | 兜底 `%LOCALAPPDATA%\MusicPlayer\ver2` | 没有 D 盘 / 默认目录不可写时 |
 
-- **默认值的兜底**：如果 D 盘不存在或目录不可写（换台机器、盘符被占用），会自动回退到 `%LOCALAPPDATA%\MusicPlayer\ver2` 并继续启动，回退结果会写在来源标签里（如「D:\MusicPlayerData 不可用，已回退 LOCALAPPDATA」）。而**显式指定**的路径（1、2 两种方式）不可用时会直接报错，不会偷偷换位置。
+**第一次启动**（默认目录还不存在、也没配过）会弹这个框，选完记进 `userdata.txt`，以后不再问：
+
+![首次启动选择数据目录](docs/datadir-picker.png)
+
+- 弹框只在**真正需要**时出现：默认目录已存在且可写、或者已经记住过选择，都直接启动，不打扰。
+- 想主动再选一次：`MusicPlayer.Host.exe --pick-user-data`；或者在「设置 → 数据目录」点「更改…」。
+- 记住的选择存在 **exe 同目录的 `userdata.txt`**（带注释头，删掉它就回到默认位置）。相对路径、`%USERPROFILE%` 这类环境变量都支持。
+- 改完要**重启播放器**才生效——CEF 的 profile 路径在进程启动时就定了。设置面板会直接提示这一点。
+- 被 `--user-data` / 环境变量指定时（优先级 1、2），设置面板会显示黄色警告：那种情况下在界面里改目录不会生效，得先去掉参数/变量。
+- 上次选的目录**失效**（U 盘拔了、盘符变了）不会直接启动失败，会重新弹框让你选；只是目录被删了、盘还在的话会自动重建，不打扰。
+- **默认值的兜底**：D 盘不存在或目录不可写时，自动回退 `%LOCALAPPDATA%\MusicPlayer\ver2`，回退结果写在来源标签里（如「D:\MusicPlayerData 不可用，已回退 LOCALAPPDATA」）。而**显式指定**的路径（1、2 两种）不可用时会直接报错，不会偷偷换位置。连兜底都不可写时给出明确错误，让你用 `--user-data` 指定目录。
 - **相对路径按 exe 所在目录解析**（不是当前工作目录），所以 `--user-data data` 就是 `exe目录\data`。
-- 页面「运行环境」卡片会显示当前实际用的目录和它来自哪种配置（命令行 / 环境变量 / 便携模式 / 默认位置），排查时一眼就能看到：
+- 页面「运行环境」卡片会显示当前实际用的目录和它来自哪种配置（命令行 / 环境变量 / 自定义目录 / 便携模式 / 默认位置），排查时一眼就能看到：
 
   ![数据目录来源](docs/datadir.png)
+
+- 设置面板里的「数据目录」区块（当前目录、来源、打开、更改）：
+
+  ![设置面板·数据目录](docs/settings-datadir.png)
 
 - 想搬走已有数据：先关掉应用，把旧目录整个拷到新位置，再用上面的方式指过去即可（缓存可以不清，CEF 会自己校验）。从旧版升级过来时，把 `%LOCALAPPDATA%\MusicPlayer\ver2` 里的内容拷进 `D:\MusicPlayerData` 即可延续登录态。
 - 界面设置（目前是 YouTube Cookie 文件和浏览器）存在目录里的 `settings.json`，与 CEF 缓存、`logs` 诊断日志放在一起；删掉它即回到「未配置」，拷到别的机器也能带走。

@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { host, type CookieFileStatus, type SettingsSnapshot } from '@/bridge/host'
+import { host, type CookieFileStatus, type DataDirectoryInfo, type SettingsSnapshot } from '@/bridge/host'
 import { useSettingsStore } from '@/stores/settings'
 
 /**
- * 设置面板（对话框）：目前只有「YouTube 登录（Cookie）」一项。
+ * 设置面板（对话框）：YouTube 登录（Cookie）+ 数据目录。
  *
  * 数据流：SettingsDialog -> host.getSettings() -> settings.json + 环境变量回退。
  * 保存走 host.saveSettings()，宿主校验 Cookie 文件、写 settings.json 并返回新快照，
  * 因此这里不需要自己判断优先级，也不会出现界面显示和实际生效不一致。
+ *
+ * 数据目录改的是「下次启动用哪个目录」：CEF 的 profile 路径在进程启动时固定，
+ * 所以宿主只负责写 userdata.txt，重启播放器后才生效。
  */
 
 type LoginMode = 'none' | 'file' | 'browser'
@@ -36,6 +39,50 @@ const messageKind = ref<MessageKind>('ok')
 const preview = ref<CookieFileStatus | null>(null)
 const card = ref<HTMLElement | null>(null)
 let previousFocus: HTMLElement | null = null
+
+/** 数据目录区块的状态 */
+const dataDir = ref<DataDirectoryInfo | null>(null)
+const choosingDir = ref(false)
+const dirMessage = ref('')
+const dirMessageKind = ref<MessageKind>('ok')
+
+async function loadDataDirectory(): Promise<void> {
+  dataDir.value = await host.getDataDirectory()
+}
+
+function setDirMessage(kind: MessageKind, text: string): void {
+  dirMessageKind.value = kind
+  dirMessage.value = text
+}
+
+/** 在资源管理器里打开当前数据目录 */
+async function openDataFolder(): Promise<void> {
+  dirMessage.value = ''
+  await host.openUserDataFolder()
+}
+
+/** 让宿主弹文件夹选择框换目录：只写 userdata.txt，重启播放器后才生效 */
+async function changeDataDirectory(): Promise<void> {
+  if (choosingDir.value || !inHost.value) return
+  choosingDir.value = true
+  dirMessage.value = ''
+  try {
+    const result = await host.chooseDataDirectory()
+    if (!result.ok) {
+      setDirMessage('error', result.error || '更换数据目录失败')
+      return
+    }
+    if (result.canceled) return
+    await loadDataDirectory()
+    if (result.warning) {
+      setDirMessage('warn', result.warning)
+      return
+    }
+    setDirMessage('ok', `已记下 ${result.dir}，重启播放器后生效。`)
+  } finally {
+    choosingDir.value = false
+  }
+}
 
 /** 打开 / 保存后把宿主的快照灌进表单 */
 function fillFrom(data: SettingsSnapshot | null): void {
@@ -162,6 +209,7 @@ function onKeydown(event: KeyboardEvent): void {
 onMounted(() => {
   previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
   window.addEventListener('keydown', onKeydown)
+  void loadDataDirectory()
   void nextTick(() => card.value?.focus())
 })
 
@@ -185,7 +233,7 @@ onBeforeUnmount(() => {
         <header class="settings-head">
           <div>
             <h2 id="settings-title">设置</h2>
-            <p>修改后立即生效，不需要重启播放器。</p>
+            <p>Cookie 改完立即生效；数据目录要重启播放器才生效。</p>
           </div>
           <button type="button" class="settings-close" aria-label="关闭设置" title="关闭设置" @click="close">✕</button>
         </header>
@@ -198,6 +246,37 @@ onBeforeUnmount(() => {
           <p v-if="!inHost" class="settings-banner warn">浏览器预览模式没有宿主，这里只能看不能存。</p>
           <p v-if="snapshot.loadWarning" class="settings-banner warn">{{ snapshot.loadWarning }}</p>
           <p v-if="settings.error" class="settings-banner error">{{ settings.error }}</p>
+
+          <section class="settings-section">
+            <h3>数据目录</h3>
+            <p class="settings-hint">
+              播放列表、CEF 缓存、诊断日志和 <code>settings.json</code> 都存在这里。
+              第一次启动时会让你选一次；以后想换地方就在这里改。
+            </p>
+
+            <p class="settings-effective">
+              当前：<code>{{ dataDir?.current || '读取中…' }}</code>
+              <span v-if="dataDir?.source">来源：{{ dataDir.source }}</span>
+            </p>
+
+            <p v-if="dataDir?.overriddenBy" class="settings-banner warn">
+              当前目录由 {{ dataDir.overriddenBy }} 指定，优先级最高；在下面改了也不会生效，请先去掉那个参数/变量。
+            </p>
+
+            <div class="field-row">
+              <button type="button" :disabled="!inHost" @click="openDataFolder">打开目录</button>
+              <button type="button" :disabled="!inHost || choosingDir" @click="changeDataDirectory">
+                {{ choosingDir ? '选择中…' : '更改…' }}
+              </button>
+            </div>
+
+            <p class="settings-hint">
+              改完需要<strong>重启播放器</strong>才生效（CEF 的缓存目录在启动时就定死了）。
+              选择结果记在 <code>{{ dataDir?.configPath || 'userdata.txt' }}</code>，删掉这个文件就回到默认位置。
+            </p>
+
+            <p v-if="dirMessage" class="dir-note" :class="dirMessageKind" role="status">{{ dirMessage }}</p>
+          </section>
 
           <section class="settings-section">
             <h3>YouTube 登录（Cookie）</h3>
@@ -583,6 +662,37 @@ onBeforeUnmount(() => {
 
 .settings-message.error {
   color: var(--mp-danger);
+}
+
+/* 数据目录区块里的结果提示（复用 --mp-* 状态色） */
+.dir-note {
+  margin: 0;
+  padding: 8px 11px;
+  border: 1px solid var(--mp-border);
+  border-radius: 10px;
+  background: var(--mp-track);
+  font-size: 12px;
+  line-height: 1.65;
+  word-break: break-word;
+  user-select: text;
+}
+
+.dir-note.ok {
+  color: var(--mp-ok);
+  border-color: color-mix(in srgb, var(--mp-ok) 45%, transparent);
+  background: color-mix(in srgb, var(--mp-ok) 10%, transparent);
+}
+
+.dir-note.warn {
+  color: var(--mp-warn);
+  border-color: color-mix(in srgb, var(--mp-warn) 45%, transparent);
+  background: color-mix(in srgb, var(--mp-warn) 10%, transparent);
+}
+
+.dir-note.error {
+  color: var(--mp-danger);
+  border-color: color-mix(in srgb, var(--mp-danger) 45%, transparent);
+  background: color-mix(in srgb, var(--mp-danger) 10%, transparent);
 }
 
 .settings-foot {

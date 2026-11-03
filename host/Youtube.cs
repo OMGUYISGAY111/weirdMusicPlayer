@@ -122,27 +122,18 @@ internal static class YtDlpLocator
             return new YtDlpCommand(fromEnv, Array.Empty<string>());
         }
 
-        // PATH 上的 yt-dlp.exe
-        var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-        foreach (var directory in path.Split(Path.PathSeparator))
+        // 便携包：exe 同目录 / exe\bin 里的 yt-dlp.exe
+        var bundled = BundledTools.FindLocal("yt-dlp.exe");
+        if (bundled != null)
         {
-            if (string.IsNullOrWhiteSpace(directory))
-            {
-                continue;
-            }
+            return new YtDlpCommand(bundled, Array.Empty<string>());
+        }
 
-            try
-            {
-                var candidate = Path.Combine(directory.Trim(), "yt-dlp.exe");
-                if (File.Exists(candidate))
-                {
-                    return new YtDlpCommand(candidate, Array.Empty<string>());
-                }
-            }
-            catch
-            {
-                // 忽略非法路径片段
-            }
+        // PATH 上的 yt-dlp.exe
+        var onPath = BundledTools.FindOnPath("yt-dlp.exe");
+        if (onPath != null)
+        {
+            return new YtDlpCommand(onPath, Array.Empty<string>());
         }
 
         // pip --user 安装后的脚本目录
@@ -164,32 +155,8 @@ internal static class YtDlpLocator
         return null;
     }
 
-    internal static string? FindOnPath(string exe)
-    {
-        var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-        foreach (var directory in path.Split(Path.PathSeparator))
-        {
-            if (string.IsNullOrWhiteSpace(directory))
-            {
-                continue;
-            }
-
-            try
-            {
-                var candidate = Path.Combine(directory.Trim(), exe);
-                if (File.Exists(candidate))
-                {
-                    return candidate;
-                }
-            }
-            catch
-            {
-                // 忽略
-            }
-        }
-
-        return null;
-    }
+    /// <summary>PATH 查找（node / python 也走这里，保持旧的调用点不变）</summary>
+    internal static string? FindOnPath(string exe) => BundledTools.FindOnPath(exe);
 }
 
 /// <summary>没有显式 --proxy 时，从注册表读 WinINET 代理（Clash 之类常见配置）</summary>

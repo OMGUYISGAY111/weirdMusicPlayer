@@ -57,6 +57,147 @@ internal sealed class HostApi
     /// </summary>
     public string GetSettings() => JsonSerializer.Serialize(BuildSettingsSnapshot(), JsonOptions);
 
+    /// <summary>
+    /// 数据目录信息（设置面板「数据目录」区块的数据源）：当前生效目录、来源、
+    /// userdata.txt 位置、是否便携模式，以及是否被启动参数覆盖（覆盖了在面板里改就没用）。
+    /// </summary>
+    public string GetDataDirectory() => JsonSerializer.Serialize(new
+    {
+        ok = true,
+        current = _form.Options.UserDataDir,
+        source = _form.Options.UserDataSource,
+        configPath = DataLocation.ConfigPath,
+        configExists = File.Exists(DataLocation.ConfigPath),
+        savedPath = DataLocation.ReadSavedPath() ?? string.Empty,
+        portable = DataLocation.PortableEnabled,
+        defaultPath = DataLocation.DefaultPath,
+        overriddenBy = DataDirectoryOverride(),
+    }, JsonOptions);
+
+    /// <summary>
+    /// 换数据目录：弹文件夹选择框 -> 校验可写 -> 写 userdata.txt。
+    /// CEF 的 profile 路径在进程启动时就定了，所以必须重启才生效，返回值里带 restartRequired。
+    /// </summary>
+    public string ChooseDataDirectory()
+    {
+        try
+        {
+            var picked = ShowDataDirectoryDialog();
+            if (string.IsNullOrWhiteSpace(picked))
+            {
+                // 用户取消：不是错误
+                return JsonSerializer.Serialize(new
+                {
+                    ok = true,
+                    canceled = true,
+                    dir = string.Empty,
+                    saved = false,
+                    restartRequired = false,
+                    warning = string.Empty,
+                    error = string.Empty,
+                }, JsonOptions);
+            }
+
+            var dir = DataLocation.Prepare(DataLocation.Normalize(picked));
+            var saved = DataLocation.SavePath(dir);
+            var overridden = DataDirectoryOverride();
+
+            var warning = !string.IsNullOrEmpty(overridden)
+                ? $"已记下 {dir}，但当前启动用的是{overridden}，重启后仍然会用它；要换目录请先去掉那个参数/变量。"
+                : !saved
+                    ? $"已切到 {dir}，但没能写进 {DataLocation.ConfigFileName}（exe 所在目录不可写），下次启动需要重新选。"
+                    : string.Empty;
+
+            PlaybackLog.Write("settings", "data_directory_changed", new
+            {
+                dir,
+                saved,
+                overriddenBy = overridden,
+                restartRequired = true,
+            });
+
+            return JsonSerializer.Serialize(new
+            {
+                ok = true,
+                canceled = false,
+                dir,
+                saved,
+                restartRequired = true,
+                warning,
+                error = string.Empty,
+            }, JsonOptions);
+        }
+        catch (Exception ex)
+        {
+            PlaybackLog.Exception("settings", "choose_data_directory_failed", ex);
+            return JsonSerializer.Serialize(new
+            {
+                ok = false,
+                canceled = false,
+                dir = string.Empty,
+                saved = false,
+                restartRequired = false,
+                warning = string.Empty,
+                error = ex.Message,
+            }, JsonOptions);
+        }
+    }
+
+    /// <summary>数据目录被启动参数覆盖时返回来源描述，否则空字符串（前端据此显示警告）</summary>
+    private string DataDirectoryOverride()
+    {
+        var source = _form.Options.UserDataSource ?? string.Empty;
+        if (source.StartsWith("命令行", StringComparison.Ordinal))
+        {
+            return "命令行参数 --user-data";
+        }
+
+        if (source.StartsWith("环境变量", StringComparison.Ordinal))
+        {
+            return "环境变量 MUSICPLAYER_USER_DATA";
+        }
+
+        return string.Empty;
+    }
+
+    /// <summary>FolderBrowserDialog 必须跑在 UI 线程；CEF 的 JS 调用线程要同步切回来拿结果。</summary>
+    private string? ShowDataDirectoryDialog()
+    {
+        if (_form.IsDisposed)
+        {
+            return null;
+        }
+
+        string? selected = null;
+
+        void Show()
+        {
+            using var dialog = new FolderBrowserDialog
+            {
+                Description = "选择数据目录（播放列表、缓存、日志、设置都存在这里）",
+                UseDescriptionForTitle = true,
+                ShowNewFolderButton = true,
+                SelectedPath = _form.Options.UserDataDir,
+            };
+
+            if (dialog.ShowDialog(_form) == DialogResult.OK)
+            {
+                selected = dialog.SelectedPath;
+            }
+        }
+
+        if (_form.InvokeRequired)
+        {
+            _form.Invoke((Action)Show);
+        }
+        else
+        {
+            Show();
+        }
+
+        return selected;
+    }
+
     /// <summary>弹出系统文件选择框挑 Cookie 文件；用户取消时 path 为空。</summary>
     public string PickYouTubeCookiesFile()
     {

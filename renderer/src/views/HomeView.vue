@@ -67,9 +67,9 @@ onMounted(refresh)
   <main class="page">
     <header class="topbar">
       <div class="brand">
-        <RouterLink to="/test">打开测试页</RouterLink>
+        <!-- <RouterLink to="/test">打开测试页</RouterLink> -->
         <RouterLink to="/search">打开搜索页</RouterLink>
-        <RouterLink to="/player">打开播放器页</RouterLink>
+        <!-- <RouterLink to="/player">打开播放器页</RouterLink> -->
         <span class="logo">🎵</span>
         <div>
           <h1>音乐播放器</h1>

@@ -14,7 +14,9 @@ tools/playback-check/bin/
 tools/playback-check/obj/
 tools/log-check/bin/
 tools/log-check/obj/
+# 便携包发布目录与压缩产物（pnpm package 生成）
 dist/
+artifacts/
 
 # logs & local cache
 *.log

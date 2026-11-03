@@ -23,7 +23,7 @@ internal static class Program
 
         try
         {
-            options = StartupOptions.Parse(args);
+            options = StartupOptions.Parse(args, PromptForDataDirectory);
             PlaybackLog.Initialize(options.UserDataDir);
             // 界面设置存在数据目录的 settings.json，读取失败只记一条警告，不影响启动
             PlayerSettings.Initialize(options.UserDataDir);
@@ -182,6 +182,16 @@ internal static class Program
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// 把「选数据目录」对话框接到启动参数解析上：首次启动、上次选的目录失效、
+    /// 或带 --pick-user-data 时才会被调用。返回 null 表示用户放弃，沿用默认位置。
+    /// </summary>
+    private static string? PromptForDataDirectory(string suggestedPath, string reason, bool firstRun)
+    {
+        using var dialog = new DataDirectoryDialog(suggestedPath, reason, firstRun);
+        return dialog.ShowDialog() == DialogResult.OK ? dialog.SelectedPath : null;
     }
 
     private static void ShowFatal(string title, Exception ex)

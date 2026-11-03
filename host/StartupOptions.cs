@@ -10,23 +10,22 @@ namespace MusicPlayer.Host;
 ///   --url &lt;url&gt;             直接指定要加载的地址
 ///   --web-root &lt;dir&gt;        指定前端产物目录（含 index.html）
 ///   --user-data &lt;dir&gt;       指定数据目录（CEF profile / 缓存 / localStorage）
+///   --pick-user-data          启动时强制弹框重选数据目录（选了才记住）
 ///   --debug-port &lt;port&gt;     指定远程调试端口（dev 默认 9222；被占用时换一个）
 ///
-/// 数据目录优先级：
-///   1. --user-data &lt;dir&gt;
-///   2. 环境变量 MUSICPLAYER_USER_DATA
-///   3. exe 同目录存在 portable.txt  -> .\data（便携模式）
-///   4. 默认 D:\MusicPlayerData（D 盘不可用时回退 %LOCALAPPDATA%\MusicPlayer\ver2）
+/// 数据目录怎么定，见 <see cref="DataLocation"/>：命令行 / 环境变量 / userdata.txt /
+/// portable.txt / 默认 D:\MusicPlayerData / 首次启动弹框选择 / LOCALAPPDATA 兜底。
 ///
-/// 显式指定（1/2）的路径不可用会直接报错；只有内置默认值才会静默回退，
-/// 回退结果会显示在页面「运行环境」卡片里。
-///
-/// 相对路径按 exe 所在目录解析（不是当前工作目录），方便便携部署。
+/// 显式指定（命令行、环境变量）的路径不可用会直接报错；默认位置不可用时会静默回退，
+/// 回退结果会显示在页面「运行环境」卡片里。相对路径按 exe 所在目录解析（不是当前工作目录）。
 /// </summary>
 internal sealed class StartupOptions
 {
-    /// <summary>默认数据目录</summary>
-    private const string DefaultUserDataDir = @"D:\MusicPlayerData";
+    /// <summary>
+    /// 需要用户挑数据目录时的回调：返回选中的路径，返回 null / 空表示用户放弃（沿用默认）。
+    /// 由 Program 接上 WinForms 对话框；命令行工具传 null 就完全不弹框。
+    /// </summary>
+    public delegate string? DirectoryPicker(string suggestedPath, string reason, bool firstRun);
 
     public bool Dev { get; private init; }
 
@@ -45,7 +44,7 @@ internal sealed class StartupOptions
     /// <summary>远程调试端口；null 表示 dev 时用默认 9222，非 dev 关闭</summary>
     public int? DebugPort { get; private init; }
 
-    public static StartupOptions Parse(string[] args)
+    public static StartupOptions Parse(string[] args, DirectoryPicker? pickDirectory = null)
     {
         var dev = false;
         string? url = null;
@@ -53,6 +52,7 @@ internal sealed class StartupOptions
         string? userData = null;
         string? proxy = null;
         int? debugPort = null;
+        var pickUserData = false;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -61,6 +61,9 @@ internal sealed class StartupOptions
             {
                 case "--dev":
                     dev = true;
+                    break;
+                case "--pick-user-data":
+                    pickUserData = true;
                     break;
                 case "--url" when i + 1 < args.Length:
                     url = args[++i];
@@ -98,7 +101,7 @@ internal sealed class StartupOptions
             }
         }
 
-        var (userDataDir, source) = ResolveUserDataDir(userData);
+        var (userDataDir, source) = ResolveUserDataDir(userData, pickUserData, pickDirectory);
 
         return new StartupOptions
         {
@@ -117,80 +120,122 @@ internal sealed class StartupOptions
         return int.TryParse(raw.Trim(), out var port) && port is > 0 and < 65536 ? port : null;
     }
 
-    private static (string Path, string Source) ResolveUserDataDir(string? fromArgs)
+    private static (string Path, string Source) ResolveUserDataDir(
+        string? fromArgs,
+        bool forcePick,
+        DirectoryPicker? pick)
     {
+        // 1. 命令行：显式指定，不可用就报错，不偷偷换位置
         if (!string.IsNullOrWhiteSpace(fromArgs))
         {
-            return (Normalize(fromArgs), "命令行 --user-data");
+            return (DataLocation.Prepare(DataLocation.Normalize(fromArgs)), "命令行 --user-data");
         }
 
+        // 2. 环境变量：同上
         var fromEnv = Environment.GetEnvironmentVariable("MUSICPLAYER_USER_DATA");
         if (!string.IsNullOrWhiteSpace(fromEnv))
         {
-            return (Normalize(fromEnv), "环境变量 MUSICPLAYER_USER_DATA");
+            return (DataLocation.Prepare(DataLocation.Normalize(fromEnv)), "环境变量 MUSICPLAYER_USER_DATA");
         }
 
-        // 便携模式：exe 旁边的 portable.txt（内容随意，只要文件存在）
-        if (File.Exists(Path.Combine(AppContext.BaseDirectory, "portable.txt")))
+        // 3. 用户在设置面板 / 首次启动时选过、记在 userdata.txt 里的目录
+        //    先把文件读出来（--pick-user-data 时也要读：用户可能在弹框里点取消，那就该沿用记住的）
+        var savedRaw = DataLocation.ReadSavedPath();
+        string? saved = null;
+        var savedError = string.Empty;
+        if (!string.IsNullOrWhiteSpace(savedRaw))
         {
-            return (Prepare(Path.Combine(AppContext.BaseDirectory, "data")), "便携模式 portable.txt");
+            saved = DataLocation.Normalize(savedRaw);
+            if (!forcePick && DataLocation.TryPrepare(saved, out savedError))
+            {
+                return (saved, "自定义目录（userdata.txt）");
+            }
+
+            // 记过的目录没了（U 盘拔掉、盘符变了）：下面重新问一次，别直接启动失败
+            Debug.WriteLine($"userdata.txt 里的目录不可用：{savedError}");
         }
 
-        // 默认放 D 盘。万一 D 盘不存在 / 不可写（换台机器、盘符被占用），
-        // 回退到 LOCALAPPDATA 而不是直接启动失败；回退原因会写进来源标签，页面上一眼可见。
-        try
+        // 4. 便携模式：exe 旁边的 portable.txt（内容随意，只要文件存在）
+        if (!forcePick && DataLocation.PortableEnabled)
         {
-            return (Prepare(DefaultUserDataDir), "默认位置");
+            return (DataLocation.Prepare(DataLocation.PortableDataPath), "便携模式 portable.txt");
         }
-        catch (Exception ex)
+
+        // 5. 默认位置已经存在且可写：老用户直接沿用，不弹框打扰
+        if (!forcePick
+            && Directory.Exists(DataLocation.DefaultPath)
+            && DataLocation.TryPrepare(DataLocation.DefaultPath, out _))
         {
-            Debug.WriteLine($"默认数据目录不可用，回退 LOCALAPPDATA：{ex.Message}");
-
-            var fallback = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "MusicPlayer",
-                "ver2");
-
-            return (Prepare(fallback), $"{DefaultUserDataDir} 不可用，已回退 LOCALAPPDATA");
+            return (DataLocation.DefaultPath, "默认位置");
         }
+
+        // 6. 真·首次启动、默认位置不可用、或用户主动要求重选 -> 弹框让用户选
+        var reason = forcePick
+            ? "选择数据目录：播放列表、缓存、日志和设置都存在这里。取消则沿用当前目录。"
+            : saved != null
+                ? $"上次选择的目录不可用，请重新选择。\n{savedError}"
+                : $"{DataLocation.DefaultPath} 还不存在，先选一个存放数据的位置。";
+
+        var picked = AskAndSave(pick, saved ?? DataLocation.DefaultPath, reason, firstRun: saved == null && !forcePick);
+        if (picked != null)
+        {
+            return picked.Value;
+        }
+
+        // 7. 没选（没有对话框，或用户点了取消）：记住的目录 > 默认位置 > LOCALAPPDATA 兜底
+        if (saved != null && DataLocation.TryPrepare(saved, out _))
+        {
+            return (saved, "自定义目录（userdata.txt）");
+        }
+
+        if (DataLocation.TryPrepare(DataLocation.DefaultPath, out _))
+        {
+            return (DataLocation.DefaultPath, "默认位置");
+        }
+
+        if (DataLocation.TryPrepare(DataLocation.FallbackPath, out _))
+        {
+            return (DataLocation.FallbackPath,
+                $"{DataLocation.DefaultPath} 不可用，已回退 LOCALAPPDATA");
+        }
+
+        throw new InvalidOperationException(
+            $"没有任何可用的数据目录：{DataLocation.DefaultPath} 和 {DataLocation.FallbackPath} 都不可写。\n" +
+            "请用 --user-data <目录> 指定一个可写的目录，或去掉 portable.txt / userdata.txt 后重试。");
     }
 
-    /// <summary>展开环境变量，并把相对路径补成 exe 目录下的绝对路径</summary>
-    private static string Normalize(string raw)
+    /// <summary>弹框问用户；选完立刻校验并记住。没对话框、用户取消、路径不可用都返回 null。</summary>
+    private static (string Path, string Source)? AskAndSave(
+        DirectoryPicker? pick,
+        string suggested,
+        string reason,
+        bool firstRun)
     {
-        var expanded = Environment.ExpandEnvironmentVariables(raw.Trim().Trim('"'));
-        var absolute = Path.IsPathRooted(expanded)
-            ? expanded
-            : Path.Combine(AppContext.BaseDirectory, expanded);
+        if (pick == null)
+        {
+            return null;
+        }
 
-        return Prepare(Path.GetFullPath(absolute));
-    }
-
-    /// <summary>建目录并做一次写测试，失败时给出带路径的清晰错误（比 CEF 内部的报错好懂）</summary>
-    private static string Prepare(string path)
-    {
+        string? chosen;
         try
         {
-            Directory.CreateDirectory(path);
+            chosen = pick(suggested, reason, firstRun);
         }
         catch (Exception ex)
         {
-            throw new InvalidOperationException(
-                $"无法创建数据目录：{path}\n请检查盘符是否存在、是否有写权限。\n{ex.Message}", ex);
+            Debug.WriteLine($"选择数据目录失败：{ex.Message}");
+            return null;
         }
 
-        var probe = Path.Combine(path, ".write-probe");
-        try
+        if (string.IsNullOrWhiteSpace(chosen))
         {
-            File.WriteAllText(probe, "ok");
-            File.Delete(probe);
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException(
-                $"数据目录不可写：{path}\n请换一个目录，或检查该目录的权限/只读属性。\n{ex.Message}", ex);
+            return null;
         }
 
-        return path;
+        var path = DataLocation.Prepare(DataLocation.Normalize(chosen));
+        var remembered = DataLocation.SavePath(path);
+
+        // 记不住也照用（exe 在无写权限目录时常这样），来源标签里体现出来
+        return (path, remembered ? "自定义目录（已记住）" : "自定义目录（本次，未记住）");
     }
 }
